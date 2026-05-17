@@ -1,0 +1,110 @@
+# Experiment Plan
+
+이 문서는 k6 시나리오별 가설, 실행 명령, 기대 메트릭 패턴, 분석 리포트 해석 기준을 정리한다. 모든 실험은 Phase 7의 wrapper를 사용해 `reports/<scenario>-<timestamp>/` 아래에 `run.json`, `k6.log`, `k6_summary.json`, 분석 결과를 누적한다.
+
+## short_prompt
+
+### 가설
+
+안정 baseline이다. 처리 capacity 안에서 요청이 흐르므로 진단 룰 trigger가 없어야 한다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh short_prompt
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| running | 5~7 |
+| waiting | 0~2 |
+| p95 latency | < 2s |
+| errors | 0 |
+
+### 기대 분석 리포트
+
+`diagnosis` 섹션에 "no rules triggered" 또는 informative 수준 결과만 나타난다. 이 시나리오는 다른 실험 결과를 비교하기 위한 정상 기준선이다.
+
+## long_prompt
+
+### 가설
+
+latency-only 시그니처다. 긴 프롬프트와 큰 출력 토큰으로 요청 자체는 오래 걸리지만, capacity 미만의 동시성이라 queue 병목은 아니다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh long_prompt
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| running | 5 이하 |
+| waiting | 거의 0 |
+| p95 latency | 약 5s |
+| errors | 0 |
+
+### 기대 분석 리포트
+
+`cpu_bottleneck`과 `queue_bottleneck` 모두 미trigger가 기대된다. 현재 룰 셋에서는 단순 latency-only 상황을 "정상 동작"으로 분류한다.
+
+## burst_traffic (normal)
+
+### 가설
+
+spike 동안 queue가 폭증한다. CPU 기반 HPA는 queue 길이를 직접 보지 않으므로 Rule #4인 `hpa_limitation`도 함께 관찰될 수 있다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh burst_traffic
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| waiting | 5 초과 |
+| p95 latency | 2s 초과 |
+| errors | spike 구간에서 `queue_timeout` 증가 가능 |
+| replicas_desired | CPU 반응에 따라 유지 또는 증가 |
+
+### 기대 분석 리포트
+
+`queue_bottleneck` triggered가 기대된다. CPU 평균이 낮고 desired replicas 변화가 없으면 `hpa_limitation`도 triggered 가능하다.
+
+## burst_traffic (high)
+
+### 가설
+
+normal보다 강한 spike로 queue 병목이 더 뚜렷해지고, HPA가 scale-out을 시도할 경우 신규 Pod 준비 지연도 관찰될 수 있다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh burst_traffic --high
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| waiting | 크게 증가 |
+| p95 latency | 2s 초과 |
+| errors | `queue_timeout` 증가 가능 |
+| replicas_desired / ready | desired가 ready보다 먼저 증가할 수 있음 |
+
+### 기대 분석 리포트
+
+`queue_bottleneck` triggered가 기대된다. HPA가 scale-out을 시도하고 Pod readiness가 늦으면 `scale_out_lag`도 동시에 triggered 가능하다.
+
+## 확장 실험 아이디어
+
+- 다양한 `MOCK_LLM_MAX_CONCURRENCY` 값으로 queue 발생 지점을 비교한다.
+- 다양한 HPA CPU target 값으로 CPU 기반 autoscaling의 반응성을 비교한다.
+- 다양한 queue timeout 값으로 실패율과 p95 latency의 trade-off를 비교한다.
+- 결과를 `reports/`에 누적한 뒤 향후 diff 도구로 scenario별 리포트를 비교한다.

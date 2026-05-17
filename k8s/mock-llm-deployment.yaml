@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: llm-ops
+  labels:
+    app: mock-llm
+    app.kubernetes.io/name: mock-llm
+    app.kubernetes.io/part-of: llm-ops-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mock-llm
+  template:
+    metadata:
+      labels:
+        app: mock-llm
+        app.kubernetes.io/name: mock-llm
+        app.kubernetes.io/part-of: llm-ops-platform
+      annotations:
+        # Fallback for plain Prometheus scrape configs (kubernetes-pods job).
+        # Phase 5's ServiceMonitor is the primary mechanism.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: mock-llm
+          image: mock-llm:dev
+          # Local k3s workflow: image is imported via
+          #   docker save mock-llm:dev | sudo k3s ctr images import -
+          # so Kubernetes must NOT try to pull from a remote registry.
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: MOCK_LLM_MAX_CONCURRENCY
+              value: "4"
+            - name: MOCK_LLM_BASE_LATENCY_MS
+              value: "200"
+          resources:
+            # CPU requests are required for HPA (Phase 7) to compute utilization.
+            # The 200m baseline gives realistic headroom on a 4-core dev VM at
+            # max 8 replicas (HPA Phase 7).
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

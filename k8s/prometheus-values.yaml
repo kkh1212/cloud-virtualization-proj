@@ -1,0 +1,36 @@
+# kube-prometheus-stack values for Phase 5.
+# Scope: install Prometheus, kube-state-metrics, node-exporter, and Grafana for
+# scraping mock-llm metrics. Chart/image version pinning is intentionally left
+# to docs/runbook.md "향후 고려사항" after MVP stabilization.
+prometheus:
+  prometheusSpec:
+    retention: 6h
+    serviceMonitorSelectorNilUsesHelmValues: false
+    scrapeInterval: "15s"
+    # Intentionally no storageSpec block. When omitted, the Prometheus Operator
+    # falls back to an emptyDir volume on the Pod, which is appropriate for the
+    # single-node MVP with 6h retention. Setting storageSpec would request a
+    # PVC and stay Pending on clusters without a default StorageClass.
+    # When persistence is needed (production / multi-node), re-introduce:
+    #   storageSpec:
+    #     volumeClaimTemplate:
+    #       spec:
+    #         storageClassName: <name>
+    #         resources: { requests: { storage: 20Gi } }
+
+grafana:
+  enabled: true
+  # Development-only default for the local MVP. This is documented in the
+  # runbook and is not intended for production use.
+  adminPassword: "admin"
+  persistence:
+    enabled: false
+
+alertmanager:
+  enabled: false
+
+kubeStateMetrics:
+  enabled: true
+
+nodeExporter:
+  enabled: true

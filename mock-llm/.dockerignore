@@ -1,0 +1,32 @@
+# Trim build context so docker build stays fast and reproducible.
+
+# Python build/cache artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Dev-only files that must not enter the runtime image
+tests/
+requirements-dev.txt
+pytest.ini
+
+# Docs and metadata
+*.md
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+
+# Defense-in-depth: never let secrets enter the build context, even though
+# the current Dockerfile only COPYs requirements.txt and app/.
+.env
+.env.*
+*.pem
+*.key
+credentials/
+secrets/

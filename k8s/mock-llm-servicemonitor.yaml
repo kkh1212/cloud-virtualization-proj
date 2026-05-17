@@ -1,0 +1,23 @@
+# ServiceMonitor for the mock-llm metrics endpoint.
+# The mock_llm_* metric names are a contract with the Phase 8 analyzer; do not
+# rename them without updating the analyzer metric dependencies.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mock-llm
+  namespace: llm-ops
+  labels:
+    release: prom
+    app: mock-llm
+spec:
+  selector:
+    matchLabels:
+      app: mock-llm
+  namespaceSelector:
+    matchNames:
+      - llm-ops
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 5s
+      scrapeTimeout: 4s

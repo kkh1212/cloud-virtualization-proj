@@ -1,0 +1,7 @@
+queue_bottleneck:   { waiting_min: 5,  p95_min_seconds: 2.0 }
+scale_out_lag:      { desired_minus_ready_min: 1, duration_min_seconds: 30, p95_min_seconds: 1.5 }
+cpu_bottleneck:     { cpu_ratio_min: 0.85, p95_min_seconds: 1.5 }
+hpa_limitation:     { cpu_ratio_max: 0.50, waiting_min: 5, p95_min_seconds: 2.0, duration_min_seconds: 30 }
+gpu_compute:        { gpu_util_min: 0.85, p95_min_seconds: 2.0 }
+gpu_memory:         { gpu_mem_ratio_min: 0.85, p95_min_seconds: 2.0 }
+gpu_scheduling:     { pod_pending_min: 1, duration_min_seconds: 30 }

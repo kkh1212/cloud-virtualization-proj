@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: llm-ops
+  labels:
+    app: mock-llm
+    app.kubernetes.io/name: mock-llm
+    app.kubernetes.io/part-of: llm-ops-platform
+spec:
+  # NodePort (not ClusterIP) so that load tests from outside the cluster go
+  # through kube-proxy's round-robin distribution to ALL Pods. With ClusterIP
+  # + `kubectl port-forward svc/...`, traffic pins to a single Pod, which
+  # would invalidate the multi-replica capacity assumptions in the Phase 4
+  # scenarios (e.g. "8 slots = 2 replicas × 4 concurrency").
+  type: NodePort
+  selector:
+    # Must match Deployment.spec.template.metadata.labels.app
+    app: mock-llm
+  ports:
+    - name: http
+      port: 8000
+      # Named port reference: matches containerPort name in the Deployment.
+      # Renaming the container port requires updating this targetPort too.
+      targetPort: http
+      # Fixed nodePort so load test scripts can hardcode BASE_URL.
+      # Range 30000-32767; 30080 chosen to mirror the container port.
+      nodePort: 30080
+      protocol: TCP

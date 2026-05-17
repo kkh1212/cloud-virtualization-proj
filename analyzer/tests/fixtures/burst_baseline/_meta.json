@@ -1,0 +1,24 @@
+{
+  "scenario": "burst_traffic",
+  "prometheus_url": "http://localhost:9090",
+  "start_iso": "2026-05-17T11:03:05+00:00",
+  "end_iso": "2026-05-17T11:06:06+00:00",
+  "step": "15s",
+  "captured_metrics": [
+    "avg_latency",
+    "cpu_usage_ratio",
+    "error_rate",
+    "memory_bytes",
+    "output_token_rate",
+    "p95_latency",
+    "p99_latency",
+    "pod_pending_count",
+    "prompt_token_rate",
+    "replicas_desired",
+    "replicas_ready",
+    "requests_running",
+    "requests_total",
+    "requests_waiting"
+  ],
+  "failed_metrics": []
+}

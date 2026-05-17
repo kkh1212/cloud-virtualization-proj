@@ -1,0 +1,19 @@
+metrics:
+  requests_total:    { promql: 'sum(rate(mock_llm_requests_total[1m]))' }
+  requests_running:  { promql: 'sum(mock_llm_requests_running)' }
+  requests_waiting:  { promql: 'sum(mock_llm_requests_waiting)' }
+  avg_latency:       { promql: 'sum(rate(mock_llm_request_duration_seconds_sum[1m])) / sum(rate(mock_llm_request_duration_seconds_count[1m]))' }
+  p95_latency:       { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_request_duration_seconds_bucket[1m])) by (le))' }
+  p99_latency:       { promql: 'histogram_quantile(0.99, sum(rate(mock_llm_request_duration_seconds_bucket[1m])) by (le))' }
+  error_rate:        { promql: 'sum(rate(mock_llm_errors_total[1m]))' }
+  prompt_token_rate: { promql: 'sum(rate(mock_llm_prompt_tokens_total[1m]))' }
+  output_token_rate: { promql: 'sum(rate(mock_llm_output_tokens_total[1m]))' }
+  cpu_usage_ratio:   { promql: 'sum(rate(container_cpu_usage_seconds_total{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm"}[1m])) / sum(kube_pod_container_resource_requests{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm",resource="cpu"})' }
+  memory_bytes:      { promql: 'sum(container_memory_working_set_bytes{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm"})' }
+  replicas_desired:  { promql: 'kube_deployment_spec_replicas{namespace="llm-ops",deployment="mock-llm"}' }
+  replicas_ready:    { promql: 'kube_deployment_status_replicas_ready{namespace="llm-ops",deployment="mock-llm"}' }
+  pod_pending_count: { promql: 'sum(kube_pod_status_phase{namespace="llm-ops",phase="Pending"})' }
+  # ----- GPU (future; uncomment when DCGM exporter is installed) -----
+  # gpu_utilization:       { promql: 'avg(DCGM_FI_DEV_GPU_UTIL{pod=~"mock-llm-.*"})' }
+  # gpu_memory_used_ratio: { promql: 'avg(DCGM_FI_DEV_FB_USED) / (avg(DCGM_FI_DEV_FB_FREE) + avg(DCGM_FI_DEV_FB_USED))' }
+  # kv_cache_usage_ratio:  { promql: 'avg(vllm:gpu_cache_usage_perc)' }
