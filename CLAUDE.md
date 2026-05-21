@@ -8,6 +8,13 @@ The MVP pipeline is:
 
 k6 load test -> mock LLM service -> Prometheus metrics -> analyzer rule engine -> Markdown/JSON report.
 
+## Start Here (resuming work / new machine)
+
+Before doing anything else, read **HANDOFF.md** in the repo root. It records the
+current progress (MVP Phase 0~9 done + finishing fixes verified end-to-end), the
+remaining work, one known issue to fix first, and how to bring up the stack on a
+fresh machine. CLAUDE.md = rules; HANDOFF.md = current state.
+
 ## Claude Role
 
 You are the main implementer.
