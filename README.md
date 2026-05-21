@@ -360,7 +360,7 @@ kubectl apply -f k8s/grafana-dashboard-llm-overview.yaml
 
 ```bash
 python3 -m venv analyzer/.venv
-analyzer/.venv/bin/pip install -r analyzer/requirements.txt
+analyzer/.venv/bin/pip install -r analyzer/requirements-dev.txt
 ```
 
 테스트:
@@ -372,7 +372,7 @@ analyzer/.venv/bin/pytest analyzer/tests -v
 fixture가 포함된 상태라면 정상적으로 다음처럼 나와야 합니다.
 
 ```text
-16 passed
+21 passed
 ```
 
 ## 7. 실제 사용 흐름
@@ -749,7 +749,7 @@ analyzer/.venv/bin/pytest analyzer/tests -v
 현재 검증 결과:
 
 ```text
-16 passed in 0.21s
+21 passed
 ```
 
 이 의미:
@@ -1161,7 +1161,161 @@ Prometheus 수집 성공
 analyzer 리포트 생성 성공
 queue_bottleneck / hpa_limitation 진단 성공
 실제 Prometheus fixture 캡처 성공
-fixture replay 포함 analyzer 테스트 16 passed
+fixture replay 포함 analyzer 테스트 21 passed
 ```
 
-현재 프로젝트는 "LLM 서비스 운영 진단 플랫폼 MVP"로서 끝까지 실행 가능한 상태입니다. 다음 단계는 CPU HPA의 한계를 개선하기 위한 queue 기반 autoscaling 실험입니다.
+현재 프로젝트는 "LLM 서비스 운영 진단 플랫폼 MVP"에서 KEDA 비교/비용 추정/CI/GPU 이관 준비까지 확장된 상태입니다. 다음 단계는 실제 클러스터에서 CPU HPA baseline과 KEDA queue autoscaling run을 각각 만들어 비교하는 것입니다.
+
+## 19. GPU 이관 전 확장 기능 사용법
+
+### 19.1 CPU HPA baseline 실험
+
+기존 CPU 기반 HPA를 baseline으로 쓸 때는 먼저 autoscaling 모드를 CPU HPA로 맞춥니다.
+
+```bash
+bash scripts/use-cpu-hpa.sh
+```
+
+그 다음 burst traffic 실험과 analyzer를 실행합니다.
+
+```bash
+bash scripts/run-experiment.sh burst_traffic
+CPU_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$CPU_RUN" --cost-profile custom
+cat "$CPU_RUN/report.md"
+```
+
+볼 것:
+
+```text
+Triggered rule: queue_bottleneck, hpa_limitation
+replicas desired/ready가 2 근처에 머무는지
+max waiting과 p95/p99 latency가 높은지
+비용 추정 섹션이 생성됐는지
+```
+
+### 19.2 KEDA 설치
+
+KEDA는 Prometheus metric을 autoscaling 신호로 쓰기 위해 필요합니다.
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda -n keda --create-namespace
+kubectl -n keda rollout status deploy/keda-operator
+```
+
+### 19.3 KEDA queue autoscaling 실험
+
+CPU HPA와 KEDA가 동시에 같은 Deployment를 제어하면 안 됩니다. KEDA 실험 전에는 아래 스크립트로 CPU HPA를 제거하고 KEDA ScaledObject를 적용합니다.
+
+```bash
+bash scripts/use-keda-queue.sh
+```
+
+적용되는 기준:
+
+```text
+metric: sum(mock_llm_requests_waiting)
+threshold: 20
+minReplicaCount: 2
+maxReplicaCount: 8
+```
+
+실험 실행:
+
+```bash
+bash scripts/run-experiment.sh burst_traffic
+KEDA_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$KEDA_RUN" --cost-profile custom
+cat "$KEDA_RUN/report.md"
+```
+
+볼 것:
+
+```text
+desired replicas max가 2보다 커지는지
+max waiting이 CPU baseline보다 줄었는지
+p95/p99 latency peak가 줄었는지
+hpa_limitation이 사라지거나 약해졌는지
+```
+
+### 19.4 CPU HPA vs KEDA 비교 리포트
+
+두 run의 report.json이 생성된 뒤 비교합니다.
+
+```bash
+analyzer/.venv/bin/python -m analyzer.compare \
+  --before "$CPU_RUN" \
+  --after "$KEDA_RUN"
+
+cat "$KEDA_RUN/comparison.md"
+```
+
+비교 리포트에서 볼 것:
+
+```text
+max waiting delta
+p95/p99 latency delta
+error rate delta
+replica max 변화
+removed triggered rules
+added triggered rules
+```
+
+### 19.5 비용 profile 설정
+
+비용 분석은 클라우드 과금 API를 호출하지 않습니다. `analyzer/config/cost.yaml`에 직접 단가를 넣습니다.
+
+예시:
+
+```yaml
+profiles:
+  custom:
+    currency: USD
+    hourly_per_mock_llm_replica: 0.05
+    hourly_cluster_overhead: 0.10
+    hourly_gpu_node: 0.00
+```
+
+사용:
+
+```bash
+analyzer/.venv/bin/python -m analyzer.main --run "$RUN_DIR" --cost-profile custom
+```
+
+리포트의 `비용 추정` 섹션에 다음이 표시됩니다.
+
+```text
+estimated run cost
+cost per 1K requests
+cost per 1K tokens
+사용한 cost profile
+```
+
+### 19.6 GPU 이관 준비
+
+GPU 서버를 구한 뒤에는 아래 문서를 기준으로 이동합니다.
+
+```text
+docs/gpu-migration.md
+```
+
+GPU 이관 전 현재 CPU/mock 환경에서 끝내야 하는 검증은 다음입니다.
+
+```bash
+analyzer/.venv/bin/pytest analyzer/tests -v
+mock-llm/.venv/bin/pytest mock-llm/tests -v
+python3 -m compileall analyzer mock-llm/app
+```
+
+## 20. 확장 후 상태 요약
+
+```text
+CPU HPA baseline 실험 가능
+KEDA queue autoscaling 실험 가능
+CPU HPA vs KEDA 비교 리포트 가능
+클라우드별 수동 비용 profile 기반 비용 추정 가능
+GitHub Actions CI 추가
+GPU 서버 이관 체크리스트 추가
+```

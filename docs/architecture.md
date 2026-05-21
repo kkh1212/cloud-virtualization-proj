@@ -51,3 +51,10 @@ Kubernetes 기반 LLM 운영 진단 플랫폼은 부하를 만들고, 서비스 
 | GPU 없음 | DCGM exporter를 추가하고 `analyzer/config/metrics.yaml`의 GPU 행 주석을 해제하면 `gpu_compute`, `gpu_memory`, `gpu_scheduling` 룰이 자동 활성화된다. |
 | 기본 룰 7개 | 새 룰은 `analyzer/rules/`에 파일 1개를 추가하고 `analyzer/rules/__init__.py`의 `ALL_RULES`에 등록한다. |
 | CPU 기반 HPA | queue 기반 custom metric autoscaling을 추가하면 Rule #4의 한계를 비교 실험할 수 있다. |
+
+
+## KEDA 확장
+
+CPU HPA baseline과 KEDA queue autoscaling은 같은 Deployment를 동시에 제어하지 않는다. 실험 전 `scripts/use-cpu-hpa.sh` 또는 `scripts/use-keda-queue.sh` 중 하나로 모드를 명시적으로 전환한다. KEDA 모드는 Prometheus query `sum(mock_llm_requests_waiting)`을 기준으로 `mock-llm` Deployment를 2~8 replicas 사이에서 조정한다.
+
+비교는 `analyzer.compare`가 생성하는 `comparison.md` / `comparison.json`을 기준으로 한다.

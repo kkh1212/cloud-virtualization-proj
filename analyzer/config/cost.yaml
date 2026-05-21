@@ -1,0 +1,27 @@
+# Manual hourly cost templates. Replace 0.0 values with the VM/node prices
+# used in your own environment. No cloud billing API is called by the analyzer.
+profiles:
+  aws:
+    currency: USD
+    hourly_per_mock_llm_replica: 0.0
+    hourly_cluster_overhead: 0.0
+    hourly_gpu_node: 0.0
+    notes: "Fill with EC2/EKS or GPU node hourly prices for your AWS experiment."
+  gcp:
+    currency: USD
+    hourly_per_mock_llm_replica: 0.0
+    hourly_cluster_overhead: 0.0
+    hourly_gpu_node: 0.0
+    notes: "Fill with Compute Engine/GKE or GPU node hourly prices for your GCP experiment."
+  azure:
+    currency: USD
+    hourly_per_mock_llm_replica: 0.0
+    hourly_cluster_overhead: 0.0
+    hourly_gpu_node: 0.0
+    notes: "Fill with VM/AKS or GPU node hourly prices for your Azure experiment."
+  custom:
+    currency: USD
+    hourly_per_mock_llm_replica: 0.0
+    hourly_cluster_overhead: 0.0
+    hourly_gpu_node: 0.0
+    notes: "Use this profile for local VM or lab-specific manual pricing."

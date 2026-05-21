@@ -127,8 +127,8 @@ def test_fixture_replay_end_to_end(fixture_dir: Path):
     md = render_markdown(report)
     js = render_json(report)
     assert md.startswith("# LLM 운영 진단 리포트")
-    assert "## 6. 진단" in md
-    assert "## 7. 개선 방향" in md
+    assert "## 7. 진단" in md
+    assert "## 8. 개선 방향" in md
     parsed_js = json.loads(js)
     assert parsed_js["scenario"] == meta.get("scenario", "fixture")
     assert "diagnosis" in parsed_js

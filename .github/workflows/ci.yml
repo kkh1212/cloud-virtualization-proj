@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install analyzer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r analyzer/requirements-dev.txt
+
+      - name: Test analyzer
+        run: python -m pytest analyzer/tests -v
+
+      - name: Install mock-llm dependencies
+        run: python -m pip install -r mock-llm/requirements-dev.txt
+
+      - name: Test mock-llm
+        run: python -m pytest mock-llm/tests -v
+
+      - name: Compile Python modules
+        run: python -m compileall analyzer mock-llm/app
+
+      - name: Parse Kubernetes YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          paths = sorted(Path('k8s').rglob('*.yaml'))
+          for path in paths:
+              docs = list(yaml.safe_load_all(path.read_text(encoding='utf-8')))
+              assert docs, f'{path} had no YAML documents'
+              print(f'OK {path}')
+          PY
+
+      - name: Docker build mock-llm
+        run: docker build -t mock-llm:ci mock-llm/

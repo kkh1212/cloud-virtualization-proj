@@ -361,7 +361,7 @@ bash scripts/run-experiment.sh burst_traffic --high
 
 ```bash
 python3 -m venv analyzer/.venv
-analyzer/.venv/bin/pip install -r analyzer/requirements.txt
+analyzer/.venv/bin/pip install -r analyzer/requirements-dev.txt
 analyzer/.venv/bin/python -m analyzer.main --run reports/burst_traffic-<timestamp>
 cat reports/burst_traffic-<timestamp>/report.md
 ```
@@ -419,7 +419,100 @@ analyzer/.venv/bin/pytest analyzer/tests -v
 - [x] Phase 8: 분석기 + 리포트
 - [x] Phase 6: Grafana 대시보드
 - [x] Phase 9: 문서 보강
+- [x] Phase 10: KEDA queue autoscaling manifest / mode switch scripts
+- [x] Phase 11: 비교 리포트 CLI
+- [x] Phase 12: 비용 추정 profile
+- [x] Phase 13: GPU 이관 체크리스트
 
-전체 완료. `bash scripts/run-experiment.sh burst_traffic` 으로 end-to-end 재현 가능.
+MVP 는 `bash scripts/run-experiment.sh burst_traffic` 으로 end-to-end 재현 가능하다. 확장 검증은 Phase 10 이후 절차에 따라 CPU HPA baseline 과 KEDA run 을 각각 생성한 뒤 비교한다.
 
-전체 설계는 `/home/azureuser/.claude/plans/scalable-growing-cat.md` 참고.
+---
+
+## Phase 10 — KEDA queue autoscaling
+
+CPU 기반 HPA baseline과 queue 기반 KEDA autoscaling을 분리해서 실험한다. 두 autoscaler가 동시에 `mock-llm` Deployment를 제어하면 안 된다.
+
+### 1. KEDA 설치
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda -n keda --create-namespace
+kubectl -n keda rollout status deploy/keda-operator
+```
+
+### 2. CPU HPA baseline 모드
+
+```bash
+bash scripts/use-cpu-hpa.sh
+bash scripts/run-experiment.sh burst_traffic
+CPU_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$CPU_RUN" --cost-profile custom
+```
+
+### 3. KEDA queue autoscaling 모드
+
+```bash
+bash scripts/use-keda-queue.sh
+bash scripts/run-experiment.sh burst_traffic
+KEDA_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$KEDA_RUN" --cost-profile custom
+```
+
+KEDA ScaledObject는 다음 metric을 사용한다.
+
+```promql
+sum(mock_llm_requests_waiting)
+```
+
+기본 threshold는 `20`, replica 범위는 `2~8`이다.
+
+---
+
+## Phase 11 — 비교 리포트
+
+두 실험 결과를 비교한다.
+
+```bash
+analyzer/.venv/bin/python -m analyzer.compare \
+  --before "$CPU_RUN" \
+  --after "$KEDA_RUN"
+cat "$KEDA_RUN/comparison.md"
+```
+
+주요 확인 항목:
+
+- `max waiting` 감소
+- `p95/p99 latency peak` 감소
+- `error rate peak` 감소
+- `desired/ready replicas max` 증가
+- `hpa_limitation` 제거 또는 완화
+
+---
+
+## Phase 12 — 비용 추정
+
+비용 분석은 `analyzer/config/cost.yaml`의 수동 단가 profile을 사용한다. 클라우드 과금 API는 호출하지 않는다.
+
+```bash
+analyzer/.venv/bin/python -m analyzer.main --run "$RUN_DIR" --cost-profile custom
+```
+
+출력 항목:
+
+- estimated run cost
+- cost per 1K requests
+- cost per 1K tokens
+- avg billable replicas
+
+---
+
+## Phase 13 — GPU 이관 준비
+
+GPU 서버가 준비되면 [gpu-migration.md](gpu-migration.md)를 기준으로 진행한다. CPU/mock 환경에서 먼저 완료할 검증:
+
+```bash
+analyzer/.venv/bin/pytest analyzer/tests -v
+mock-llm/.venv/bin/pytest mock-llm/tests -v
+python3 -m compileall analyzer mock-llm/app
+```

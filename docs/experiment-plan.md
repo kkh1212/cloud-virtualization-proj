@@ -108,3 +108,38 @@ bash scripts/run-experiment.sh burst_traffic --high
 - 다양한 HPA CPU target 값으로 CPU 기반 autoscaling의 반응성을 비교한다.
 - 다양한 queue timeout 값으로 실패율과 p95 latency의 trade-off를 비교한다.
 - 결과를 `reports/`에 누적한 뒤 향후 diff 도구로 scenario별 리포트를 비교한다.
+
+
+## CPU HPA vs KEDA queue autoscaling
+
+### 가설
+
+CPU HPA baseline에서는 queue 병목이 커지고 `hpa_limitation`이 trigger된다. KEDA queue autoscaling에서는 `mock_llm_requests_waiting` 기반으로 replica가 증가해 waiting과 latency가 감소한다.
+
+### 실행
+
+```bash
+bash scripts/use-cpu-hpa.sh
+bash scripts/run-experiment.sh burst_traffic
+CPU_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$CPU_RUN" --cost-profile custom
+
+bash scripts/use-keda-queue.sh
+bash scripts/run-experiment.sh burst_traffic
+KEDA_RUN=$(ls -dt reports/burst_traffic-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$KEDA_RUN" --cost-profile custom
+
+analyzer/.venv/bin/python -m analyzer.compare --before "$CPU_RUN" --after "$KEDA_RUN"
+```
+
+### 기대 비교 리포트
+
+| 항목 | 기대 변화 |
+|---|---|
+| max waiting | 감소 |
+| p95/p99 latency peak | 감소 |
+| desired/ready replicas max | 증가 |
+| hpa_limitation | removed 또는 완화 |
+| cost per 1K requests | replica 증가로 상승 가능 |
+
+비용은 성능 개선과 함께 해석한다. replica 증가로 run cost가 늘어도, latency와 failure가 줄면 운영상 더 나은 선택일 수 있다.

@@ -10,6 +10,7 @@ import yaml
 from dateutil.parser import isoparse
 
 from analyzer.collector import PrometheusClient, PrometheusError
+from analyzer.cost import CostConfigError, build_cost_estimate, load_cost_config
 from analyzer.report import render_json, render_markdown
 from analyzer.rules import ALL_RULES
 from analyzer.schemas import MetricSnapshot, Report, TimeSeries
@@ -49,7 +50,21 @@ def main() -> int:
             continue
         diagnosis.append(rule.evaluate(snapshot, rules_cfg.get(rule.id, {})))
 
-    report = _build_report(run_context["scenario"], snapshot, diagnosis)
+    cost_estimate = None
+    if args.cost_profile:
+        try:
+            cost_estimate = build_cost_estimate(
+                snapshot,
+                args.cost_profile,
+                load_cost_config(BASE_DIR / "config" / "cost.yaml"),
+            )
+        except CostConfigError as exc:
+            print(f"[cost] {exc}", file=sys.stderr)
+            return 2
+
+    report = _build_report(
+        run_context["scenario"], snapshot, diagnosis, cost=cost_estimate
+    )
     output_dir = run_context["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
@@ -72,6 +87,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--prometheus-url", help="Prometheus base URL for direct mode")
     parser.add_argument("--output", help="Output directory for direct mode")
     parser.add_argument("--step", default="15s", help="Prometheus query_range step")
+    parser.add_argument("--cost-profile", help="Name under analyzer/config/cost.yaml profiles")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -116,7 +132,12 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _build_report(scenario: str, snapshot: MetricSnapshot, diagnosis) -> Report:
+def _build_report(
+    scenario: str,
+    snapshot: MetricSnapshot,
+    diagnosis,
+    cost: dict[str, Any] | None = None,
+) -> Report:
     start, end = snapshot.time_range
     duration_seconds = max((end - start).total_seconds(), 0.0)
     throughput = _series(snapshot, "requests_total")
@@ -184,6 +205,7 @@ def _build_report(scenario: str, snapshot: MetricSnapshot, diagnosis) -> Report:
             "memory_bytes_peak": _none_if_empty(memory, memory.max()),
             "gpu": "현재 미수집",
         },
+        cost=cost,
         diagnosis=diagnosis,
         improvements=triggered_suggestions,
     )

@@ -62,9 +62,28 @@ def render_markdown(report: Report) -> str:
         f"| memory peak | {_fmt_bytes(report.resource_state.get('memory_bytes_peak'))} |",
         "| GPU | 현재 미수집 |",
         "",
-        "## 6. 진단",
+        "## 6. 비용 추정",
         "",
     ]
+
+    if report.cost:
+        currency = report.cost.get("currency", "USD")
+        lines.extend(
+            [
+                "| 항목 | 값 |",
+                "|---|---|",
+                f"| cost profile | {report.cost.get('profile')} |",
+                f"| estimated run cost | {_fmt_money(report.cost.get('estimated_run_cost'), currency)} |",
+                f"| cost per 1K requests | {_fmt_money(report.cost.get('cost_per_1k_requests'), currency)} |",
+                f"| cost per 1K tokens | {_fmt_money(report.cost.get('cost_per_1k_tokens'), currency)} |",
+                f"| avg billable replicas | {_fmt(report.cost.get('avg_billable_replicas'))} |",
+                f"| estimated tokens | {_fmt(report.cost.get('estimated_tokens'))} |",
+            ]
+        )
+    else:
+        lines.append("비용 profile 이 선택되지 않았습니다. `--cost-profile <name>` 으로 활성화할 수 있습니다.")
+
+    lines.extend(["", "## 7. 진단", ""])
 
     if triggered:
         lines.extend(
@@ -81,13 +100,7 @@ def render_markdown(report: Report) -> str:
     else:
         lines.append("Triggered 된 진단 룰이 없습니다.")
 
-    lines.extend(
-        [
-            "",
-            "## 7. 개선 방향",
-            "",
-        ]
-    )
+    lines.extend(["", "## 8. 개선 방향", ""])
     for item in report.improvements:
         lines.append(f"- {item}")
     lines.append("")
@@ -128,3 +141,9 @@ def _fmt_bytes(value: Any) -> str:
         size /= 1024
         index += 1
     return f"{size:.2f} {units[index]}"
+
+
+def _fmt_money(value: Any, currency: Any) -> str:
+    if value is None:
+        return "현재 미수집"
+    return f"{float(value):.6f} {currency}"

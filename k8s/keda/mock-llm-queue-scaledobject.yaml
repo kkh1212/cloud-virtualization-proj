@@ -1,0 +1,26 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: mock-llm-queue
+  namespace: llm-ops
+  labels:
+    app: mock-llm
+    app.kubernetes.io/name: mock-llm
+    app.kubernetes.io/part-of: llm-ops-platform
+spec:
+  scaleTargetRef:
+    name: mock-llm
+  pollingInterval: 15
+  cooldownPeriod: 60
+  minReplicaCount: 2
+  maxReplicaCount: 8
+  advanced:
+    restoreToOriginalReplicaCount: true
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prom-kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+        metricName: mock_llm_requests_waiting_total
+        query: sum(mock_llm_requests_waiting)
+        threshold: "20"
+        activationThreshold: "1"
