@@ -1,3 +1,68 @@
+# 0522 작업 내용 - KEDA 실측 검증 및 closed-loop 튜닝
+
+2026-05-22 우분투 k3s 클러스터에서 Phase 1~5 실측 검증을 진행했다. 핵심 결론은 **CPU HPA는 LLM queue 병목을 잡지 못했고, KEDA queue autoscaling과 추천값 기반 튜닝은 latency/error/waiting queue를 크게 줄였다**는 것이다.
+
+## 0522-1. Phase 1~4 검증 요약
+
+- Phase 1 LLM serving metric 검증 완료: `TTFT p95`, `inter-token latency p95`, `batch size`, `KV-cache usage proxy`가 mock-llm `/metrics` -> Prometheus -> analyzer report까지 정상 연결됐다.
+- `short_prompt` 결과: `TTFT p95 (peak)=0.243s`, `inter-token latency p95 (peak)=0.010s`, `max batch size=3`, `KV-cache 사용률 avg=0.409`.
+- Phase 2 신규 k6 시나리오 검증 완료: `mixed_workload`는 574 requests, `sustained_ramp`는 15,842 requests로 정상 실행됐다.
+- `mixed_workload`는 평균 latency 1.978s, p95 6.375s, p99 9.275s로 long-tail 패턴을 보였다.
+- `sustained_ramp`는 CPU HPA 환경에서 max waiting 1198, p95/p99 30s, `queue_bottleneck` + `hpa_limitation`을 재현했다.
+- Phase 3 SLO 검증 완료: `strict`, `long_context`, `default` profile에서 `## 7. SLO 판정`과 `slo_breach` 진단이 정상 렌더링됐다.
+- Phase 4 추천 검증 완료: `## 9. 권장 설정`에서 KEDA 전환, threshold 하향, maxReplicaCount 상향, max concurrency 상향이 실측 기반으로 제안됐다.
+
+## 0522-2. Phase 5 CPU HPA vs KEDA 실측 비교
+
+CPU HPA baseline과 KEDA queue autoscaling을 같은 `sustained_ramp` 부하로 비교했다.
+
+| 항목 | CPU HPA baseline | KEDA queue autoscaling | 해석 |
+|---|---:|---:|---|
+| avg latency | 21.611s | 5.460s | KEDA 적용 후 74.7% 감소 |
+| p95 latency peak | 30.000s | 28.134s | 일부 개선, SLO는 아직 위반 |
+| p99 latency peak | 30.000s | 29.627s | 일부 개선, SLO는 아직 위반 |
+| error rate peak | 29.055 err/s | 0.000 err/s | 에러 제거 |
+| max waiting | 1198 | 396 | queue 66.9% 감소 |
+| desired replicas max | 2 | 8 | KEDA가 queue를 보고 scale-out |
+| ready replicas max | 2 | 7 | Pod 준비 지연이 일부 존재 |
+| triggered 변화 | `hpa_limitation` 존재 | `hpa_limitation` 제거, `scale_out_lag` 추가 | 병목이 autoscaler 미작동에서 scale-out lag로 이동 |
+
+결론: KEDA는 CPU HPA보다 명확히 개선됐지만, 기본값만으로는 tail latency SLO를 완전히 만족하지 못했다.
+
+## 0522-3. 추천값 적용 후 closed-loop 튜닝 결과
+
+KEDA run의 추천 중 성능에 직접 관련된 값만 적용했다.
+
+```text
+MOCK_LLM_MAX_CONCURRENCY: 4 -> 8
+KEDA threshold: 20 -> 10
+KEDA maxReplicaCount: 8 -> 12
+recommend.yaml current 동기화
+```
+
+KEDA 기본값 대비 tuned run 비교:
+
+| 항목 | KEDA 기본값 | Tuned KEDA | 해석 |
+|---|---:|---:|---|
+| avg latency | 5.460s | 2.099s | 61.6% 감소 |
+| p95 latency peak | 28.134s | 7.738s | 72.5% 감소 |
+| p99 latency peak | 29.627s | 9.548s | 67.8% 감소 |
+| error rate peak | 0.000 err/s | 0.000 err/s | 에러 0 유지 |
+| throughput avg | 23.513 req/s | 23.958 req/s | 소폭 증가 |
+| max waiting | 396 | 91 | 77.0% 감소 |
+| desired replicas max | 8 | 9 | 더 이른 scale-out 확인 |
+
+결론: analyzer 추천값 일부를 적용한 뒤 실제 실험에서 latency와 waiting queue가 추가로 크게 감소했다. 즉 **recommendation -> manifest 반영 -> 재실험 -> comparison 검증** closed-loop가 성립했다.
+
+## 0522-4. 남은 병목과 다음 작업
+
+- Tuned run에서도 `p95_latency_seconds=7.738s`, `p99_latency_seconds=9.548s`로 default SLO는 아직 위반이다.
+- `scale_out_lag`가 계속 남아 있으므로 Pod startup/readiness 지연, `minReplicaCount` 상향, KEDA `pollingInterval` 조정, 추가 maxReplicaCount 튜닝을 검토해야 한다.
+- mock 환경에서는 CPU 사용률이 비현실적으로 낮아 CPU request 추천이 낮게 나올 수 있다. 실제 vLLM/GPU 환경에서 다시 검증해야 한다.
+- 안정된 tuned run을 `analyzer/tests/fixtures/sustained_keda_tuned/`로 캡처했고, fixture replay 포함 analyzer 테스트는 `35 passed`를 확인했다.
+
+---
+
 # cloud-virtualization-proj
 
 Kubernetes 기반 **LLM 서비스 운영 진단 플랫폼** MVP입니다.

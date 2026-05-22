@@ -181,6 +181,8 @@ def _pct_change(before: float | None, after: float | None) -> float | None:
 def _improved(before: float | None, after: float | None, direction: str) -> bool | None:
     if direction == "neutral" or before is None or after is None:
         return None
+    if after == before:
+        return None
     if direction == "lower":
         return after < before
     if direction == "higher":

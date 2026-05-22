@@ -3,7 +3,7 @@ set -euo pipefail
 
 info() { printf '[INFO] %s\n' "$*"; }
 
-if ! kubectl api-resources | grep -q '^scaledobjects'; then
+if ! kubectl get crd scaledobjects.keda.sh >/dev/null 2>&1; then
   cat >&2 <<'EOF'
 [ERROR] KEDA CRDs are not installed. Install KEDA first:
   helm repo add kedacore https://kedacore.github.io/charts

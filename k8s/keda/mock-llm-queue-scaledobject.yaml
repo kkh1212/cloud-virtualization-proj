@@ -13,7 +13,7 @@ spec:
   pollingInterval: 15
   cooldownPeriod: 60
   minReplicaCount: 2
-  maxReplicaCount: 8
+  maxReplicaCount: 12
   advanced:
     restoreToOriginalReplicaCount: true
   triggers:
@@ -22,5 +22,5 @@ spec:
         serverAddress: http://prom-kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
         metricName: mock_llm_requests_waiting_total
         query: sum(mock_llm_requests_waiting)
-        threshold: "20"
+        threshold: "10"
         activationThreshold: "1"

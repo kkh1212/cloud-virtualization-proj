@@ -4,7 +4,7 @@ set -euo pipefail
 info() { printf '[INFO] %s\n' "$*"; }
 
 info "Switching mock-llm autoscaling mode to CPU HPA"
-if kubectl api-resources | grep -q '^scaledobjects'; then
+if kubectl get crd scaledobjects.keda.sh >/dev/null 2>&1; then
   kubectl -n llm-ops delete scaledobject.keda.sh mock-llm-queue --ignore-not-found
 else
   info "KEDA ScaledObject CRD not installed; skipping ScaledObject cleanup"
