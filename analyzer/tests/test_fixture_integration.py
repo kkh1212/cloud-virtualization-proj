@@ -21,6 +21,7 @@ change per experiment). It asserts that:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -127,8 +128,10 @@ def test_fixture_replay_end_to_end(fixture_dir: Path):
     md = render_markdown(report)
     js = render_json(report)
     assert md.startswith("# LLM 운영 진단 리포트")
-    assert "## 7. 진단" in md
-    assert "## 8. 개선 방향" in md
+    # Section numbers shift as optional sections (cost, SLO) are added, so match
+    # on the section title regardless of its number.
+    assert re.search(r"## \d+\. 진단", md)
+    assert re.search(r"## \d+\. 개선 방향", md)
     parsed_js = json.loads(js)
     assert parsed_js["scenario"] == meta.get("scenario", "fixture")
     assert "diagnosis" in parsed_js

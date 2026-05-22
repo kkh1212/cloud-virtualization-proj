@@ -11,9 +11,20 @@ from dateutil.parser import isoparse
 
 from analyzer.collector import PrometheusClient, PrometheusError
 from analyzer.cost import CostConfigError, build_cost_estimate, load_cost_config
+from analyzer.recommend import (
+    RecommendConfigError,
+    build_recommendations,
+    load_recommend_config,
+)
 from analyzer.report import render_json, render_markdown
 from analyzer.rules import ALL_RULES
 from analyzer.schemas import MetricSnapshot, Report, TimeSeries
+from analyzer.slo import (
+    SLOConfigError,
+    build_slo_evaluation,
+    load_slo_config,
+    slo_breach_result,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -62,8 +73,40 @@ def main() -> int:
             print(f"[cost] {exc}", file=sys.stderr)
             return 2
 
+    slo_evaluation = None
+    if args.slo_profile:
+        try:
+            slo_evaluation = build_slo_evaluation(
+                snapshot,
+                args.slo_profile,
+                load_slo_config(BASE_DIR / "config" / "slo.yaml"),
+            )
+        except SLOConfigError as exc:
+            print(f"[slo] {exc}", file=sys.stderr)
+            return 2
+        breach = slo_breach_result(slo_evaluation)
+        if breach is not None:
+            diagnosis.append(breach)
+
+    recommendations: list[dict[str, Any]] = []
+    try:
+        recommendations = build_recommendations(
+            snapshot,
+            diagnosis,
+            slo_evaluation,
+            load_recommend_config(BASE_DIR / "config" / "recommend.yaml"),
+        )
+    except (RecommendConfigError, OSError) as exc:
+        # Recommendations are advisory; never block the report on a config issue.
+        print(f"[recommend] skipped: {exc}", file=sys.stderr)
+
     report = _build_report(
-        run_context["scenario"], snapshot, diagnosis, cost=cost_estimate
+        run_context["scenario"],
+        snapshot,
+        diagnosis,
+        cost=cost_estimate,
+        slo=slo_evaluation,
+        recommendations=recommendations,
     )
     output_dir = run_context["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +131,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", help="Output directory for direct mode")
     parser.add_argument("--step", default="15s", help="Prometheus query_range step")
     parser.add_argument("--cost-profile", help="Name under analyzer/config/cost.yaml profiles")
+    parser.add_argument("--slo-profile", help="Name under analyzer/config/slo.yaml profiles")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -137,6 +181,8 @@ def _build_report(
     snapshot: MetricSnapshot,
     diagnosis,
     cost: dict[str, Any] | None = None,
+    slo: dict[str, Any] | None = None,
+    recommendations: list[dict[str, Any]] | None = None,
 ) -> Report:
     start, end = snapshot.time_range
     duration_seconds = max((end - start).total_seconds(), 0.0)
@@ -149,6 +195,10 @@ def _build_report(
     waiting = _series(snapshot, "requests_waiting")
     prompt_tokens = _series(snapshot, "prompt_token_rate")
     output_tokens = _series(snapshot, "output_token_rate")
+    ttft = _series(snapshot, "ttft_p95")
+    tpot = _series(snapshot, "tpot_p95")
+    batch_size = _series(snapshot, "batch_size_max")
+    kv_cache = _series(snapshot, "kv_cache_ratio")
     desired = _series(snapshot, "replicas_desired")
     ready = _series(snapshot, "replicas_ready")
     pending = _series(snapshot, "pod_pending_count")
@@ -188,6 +238,10 @@ def _build_report(
             "max_waiting": _none_if_empty(waiting, waiting.max()),
             "prompt_token_rate_avg": _none_if_empty(prompt_tokens, prompt_tokens.mean()),
             "output_token_rate_avg": _none_if_empty(output_tokens, output_tokens.mean()),
+            "ttft_p95_peak_seconds": _none_if_empty(ttft, ttft.max()),
+            "tpot_p95_peak_seconds": _none_if_empty(tpot, tpot.max()),
+            "max_batch_size": _none_if_empty(batch_size, batch_size.max()),
+            "kv_cache_ratio_avg": _none_if_empty(kv_cache, kv_cache.mean()),
         },
         k8s_state={
             "desired_replicas_first": _none_if_empty(desired, desired.first()),
@@ -206,6 +260,8 @@ def _build_report(
             "gpu": "현재 미수집",
         },
         cost=cost,
+        slo=slo,
+        recommendations=recommendations or [],
         diagnosis=diagnosis,
         improvements=triggered_suggestions,
     )

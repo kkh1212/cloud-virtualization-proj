@@ -41,6 +41,10 @@ def render_markdown(report: Report) -> str:
         f"| max waiting | {_fmt(report.llm_state.get('max_waiting'))} |",
         f"| prompt token throughput avg | {_fmt(report.llm_state.get('prompt_token_rate_avg'))} tok/s |",
         f"| output token throughput avg | {_fmt(report.llm_state.get('output_token_rate_avg'))} tok/s |",
+        f"| TTFT p95 (peak) | {_fmt_seconds(report.llm_state.get('ttft_p95_peak_seconds'))} |",
+        f"| inter-token latency p95 (peak) | {_fmt_seconds(report.llm_state.get('tpot_p95_peak_seconds'))} |",
+        f"| max batch size | {_fmt(report.llm_state.get('max_batch_size'))} |",
+        f"| KV-cache 사용률 avg (proxy) | {_fmt(report.llm_state.get('kv_cache_ratio_avg'))} |",
         "",
         "## 4. Kubernetes 상태",
         "",
@@ -83,7 +87,33 @@ def render_markdown(report: Report) -> str:
     else:
         lines.append("비용 profile 이 선택되지 않았습니다. `--cost-profile <name>` 으로 활성화할 수 있습니다.")
 
-    lines.extend(["", "## 7. 진단", ""])
+    lines.extend(["", "## 7. SLO 판정", ""])
+
+    if report.slo:
+        met = report.slo.get("met")
+        verdict = "충족" if met else ("위반" if met is False else "평가 항목 없음")
+        lines.append(f"- profile: `{report.slo.get('profile')}` / 종합 판정: **{verdict}**")
+        lines.append("")
+        checks = report.slo.get("checks", [])
+        if checks:
+            lines.extend(
+                [
+                    "| 지표 | 목표 | 관측 | 판정 |",
+                    "|---|---|---|---|",
+                ]
+            )
+            for check in checks:
+                mark = "OK" if check.get("met") else "BREACH"
+                lines.append(
+                    f"| {check.get('metric')} | {check.get('comparison')} "
+                    f"{_fmt(check.get('target'))} | {_fmt(check.get('observed'))} | {mark} |"
+                )
+        else:
+            lines.append("이 run 에서 평가 가능한 SLO 지표가 없습니다(해당 메트릭 미수집).")
+    else:
+        lines.append("SLO profile 이 선택되지 않았습니다. `--slo-profile <name>` 으로 활성화할 수 있습니다.")
+
+    lines.extend(["", "## 8. 진단", ""])
 
     if triggered:
         lines.extend(
@@ -100,7 +130,27 @@ def render_markdown(report: Report) -> str:
     else:
         lines.append("Triggered 된 진단 룰이 없습니다.")
 
-    lines.extend(["", "## 8. 개선 방향", ""])
+    lines.extend(["", "## 9. 권장 설정", ""])
+    if report.recommendations:
+        lines.extend(
+            [
+                "| 대상 | 현재 | 권장 | 근거 |",
+                "|---|---|---|---|",
+            ]
+        )
+        for rec in report.recommendations:
+            lines.append(
+                f"| {rec.get('target')} | {rec.get('current')} | "
+                f"{rec.get('recommended')} | {rec.get('rationale')} |"
+            )
+        lines.append("")
+        lines.append(
+            "> 권장값은 advisory 입니다. 적용 전 검토하고, 적용 후 재실험으로 검증하세요(Phase 5)."
+        )
+    else:
+        lines.append("현재 수집 구간 기준 권장할 설정 변경이 없습니다.")
+
+    lines.extend(["", "## 10. 개선 방향", ""])
     for item in report.improvements:
         lines.append(f"- {item}")
     lines.append("")

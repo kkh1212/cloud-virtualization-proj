@@ -1,0 +1,28 @@
+# Right-sizing / autoscaling recommendation inputs.
+#
+# 'current' is the baseline the recommender compares observed load against.
+# Keep it in sync with k8s/mock-llm-deployment.yaml, k8s/mock-llm-hpa.yaml and
+# k8s/keda/mock-llm-queue-scaledobject.yaml. (We read it from here rather than
+# parsing the manifests so the recommender stays decoupled and testable.)
+#
+# 'tuning' controls the heuristics. Recommendations are advisory only — nothing
+# is applied automatically.
+current:
+  replicas_min: 2
+  replicas_max: 8
+  cpu_request_millicores: 200
+  cpu_limit_millicores: 1000
+  memory_request_mib: 256
+  memory_limit_mib: 512
+  max_concurrency: 4
+  hpa_cpu_target_pct: 60
+  keda_queue_threshold: 20
+
+tuning:
+  cpu_headroom: 1.3                 # recommended request = peak usage * headroom
+  memory_headroom: 1.3
+  cpu_request_floor_millicores: 50  # never recommend a CPU request below this
+  memory_request_floor_mib: 128
+  significant_change_pct: 20        # only surface a change this large or bigger
+  low_cpu_ratio: 0.5                # below this, CPU is "spare" — concurrency can rise
+  concurrency_scale_factor: 2       # multiplier when recommending more concurrency

@@ -19,13 +19,17 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.metrics import (
+    BATCH_SIZE,
     ERRORS_TOTAL,
+    INTER_TOKEN_LATENCY_SECONDS,
+    KV_CACHE_USAGE_RATIO,
     OUTPUT_TOKENS_TOTAL,
     PROMPT_TOKENS_TOTAL,
     REQUEST_DURATION_SECONDS,
     REQUESTS_RUNNING,
     REQUESTS_TOTAL,
     REQUESTS_WAITING,
+    TIME_TO_FIRST_TOKEN_SECONDS,
 )
 from app.simulator import LLMSimulator, QueueTimeout
 
@@ -76,6 +80,8 @@ class ChatCompletionResponse(BaseModel):
 def _sync_gauges() -> None:
     REQUESTS_RUNNING.set(simulator.running)
     REQUESTS_WAITING.set(simulator.waiting)
+    BATCH_SIZE.set(simulator.running)
+    KV_CACHE_USAGE_RATIO.set(simulator.running / simulator.max_concurrency)
 
 
 # ---------- endpoints ----------
@@ -101,6 +107,8 @@ async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse
 
     PROMPT_TOKENS_TOTAL.inc(result.prompt_tokens)
     OUTPUT_TOKENS_TOTAL.inc(result.output_tokens)
+    TIME_TO_FIRST_TOKEN_SECONDS.observe(result.ttft_s)
+    INTER_TOKEN_LATENCY_SECONDS.observe(result.tpot_s)
 
     return ChatCompletionResponse(
         id=f"chatcmpl-{uuid.uuid4().hex[:24]}",

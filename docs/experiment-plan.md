@@ -143,3 +143,50 @@ analyzer/.venv/bin/python -m analyzer.compare --before "$CPU_RUN" --after "$KEDA
 | cost per 1K requests | replica 증가로 상승 가능 |
 
 비용은 성능 개선과 함께 해석한다. replica 증가로 run cost가 늘어도, latency와 failure가 줄면 운영상 더 나은 선택일 수 있다.
+
+
+## SLO 기반 closed-loop (sustained_ramp / mixed_workload)
+
+### 가설
+
+점진 부하(`sustained_ramp`)에서 CPU HPA는 큐를 직접 보지 못해 SLO(p95/p99/error)를 위반하고, KEDA queue는 `mock_llm_requests_waiting` 기반으로 조기 스케일아웃해 SLO 위반이 감소한다. 분석기의 추천 엔진(`## 9. 권장 설정`)이 제시한 설정을 적용해 재실험하면 위반이 더 줄어든다(closed-loop 검증).
+
+### 실행: CPU baseline → KEDA → 추천 적용 재실험
+
+```bash
+# 0) (최초 1회) KEDA 설치
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda -n keda --create-namespace
+kubectl -n keda rollout status deploy/keda-operator
+
+# 1) CPU HPA baseline (점진 ramp)
+bash scripts/use-cpu-hpa.sh
+bash scripts/run-experiment.sh sustained_ramp
+CPU_RUN=$(ls -dt reports/sustained_ramp-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$CPU_RUN" --slo-profile default --cost-profile custom
+
+# 2) KEDA queue autoscaling (동일 부하)
+bash scripts/use-keda-queue.sh
+bash scripts/run-experiment.sh sustained_ramp
+KEDA_RUN=$(ls -dt reports/sustained_ramp-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$KEDA_RUN" --slo-profile default --cost-profile custom
+
+# 3) before/after 비교
+analyzer/.venv/bin/python -m analyzer.compare --before "$CPU_RUN" --after "$KEDA_RUN"
+cat "$KEDA_RUN/comparison.md"
+
+# 4) (closed-loop) KEDA run 의 "## 9. 권장 설정" 추천값을 매니페스트에 반영 후 재실험
+#    예: keda threshold / replicas_max / container requests / MOCK_LLM_MAX_CONCURRENCY
+#    적용 후 recommend.yaml 의 current 도 동기화하고 다시 run → compare.
+```
+
+### 해석 기준
+
+| 출력 | 볼 것 |
+|---|---|
+| `report.md` `## 7. SLO 판정` | CPU run 은 위반(BREACH), KEDA run 은 충족 또는 위반 항목 감소 |
+| `report.md` `## 9. 권장 설정` | KEDA threshold/replica/리소스/concurrency 정량 추천 |
+| `comparison.md` | max waiting↓, p95/p99 peak↓, desired/ready replicas max↑, hpa_limitation removed |
+| `mixed_workload` | 멀티모달에서 p95/p99 long tail, TTFT/TPOT 가 shape 별로 변동 |
+

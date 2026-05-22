@@ -8,6 +8,10 @@ metrics:
   error_rate:        { promql: 'sum(rate(mock_llm_errors_total[1m]))' }
   prompt_token_rate: { promql: 'sum(rate(mock_llm_prompt_tokens_total[1m]))' }
   output_token_rate: { promql: 'sum(rate(mock_llm_output_tokens_total[1m]))' }
+  ttft_p95:          { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_time_to_first_token_seconds_bucket[1m])) by (le))' }
+  tpot_p95:          { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_inter_token_latency_seconds_bucket[1m])) by (le))' }
+  batch_size_max:    { promql: 'max(mock_llm_batch_size)' }
+  kv_cache_ratio:    { promql: 'avg(mock_llm_kv_cache_usage_ratio)' }
   cpu_usage_ratio:   { promql: 'sum(rate(container_cpu_usage_seconds_total{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm"}[1m])) / sum(kube_pod_container_resource_requests{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm",resource="cpu"})' }
   memory_bytes:      { promql: 'sum(container_memory_working_set_bytes{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm"})' }
   replicas_desired:  { promql: 'kube_deployment_spec_replicas{namespace="llm-ops",deployment="mock-llm"}' }

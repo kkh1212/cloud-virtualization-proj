@@ -8,7 +8,7 @@
 // of a fixed-length word lets us approximate "prompt_tokens ≈ promptChars/6".
 
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 
 export const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 export const HEADERS = { 'Content-Type': 'application/json' };
@@ -30,6 +30,26 @@ export function buildPayload({ promptChars = 50, maxTokens = 64, role = 'user' }
 
 export function chatCompletions(payload) {
   return http.post(`${BASE_URL}/v1/chat/completions`, payload, { headers: HEADERS });
+}
+
+// Exponential (Poisson-process) inter-arrival sleep; mean is in seconds.
+// -mean*ln(1-U) yields exponentially distributed gaps, so per-VU arrivals
+// approximate a Poisson process instead of a fixed cadence — closer to how
+// real users hit a service.
+export function expSleep(meanSeconds) {
+  const gap = -meanSeconds * Math.log(1 - Math.random());
+  sleep(gap);
+}
+
+// Weighted random choice. items: [{ weight, value }, ...]. Returns a value.
+export function pickWeighted(items) {
+  const total = items.reduce((acc, it) => acc + it.weight, 0);
+  let r = Math.random() * total;
+  for (const it of items) {
+    r -= it.weight;
+    if (r <= 0) return it.value;
+  }
+  return items[items.length - 1].value;
 }
 
 // Standard success check used by every scenario; results show up in the

@@ -48,6 +48,46 @@ def test_delay_scales_with_inputs():
     assert long_output > long_prompt
 
 
+def test_phases_decompose_consistently():
+    sim = make_sim()  # base=100, per_prompt=10, per_output=20
+    ttft_s, remaining_s, total_s, tpot_s = sim.estimate_phases_s(
+        prompt_tokens=2, max_tokens=4
+    )
+    # total must equal the single-phase estimate (latency unchanged)
+    assert total_s == pytest.approx(sim.estimate_delay_s(prompt_tokens=2, max_tokens=4))
+    assert total_s == pytest.approx(ttft_s + remaining_s)
+    # TTFT (prefill + first token) precedes remaining decode
+    assert ttft_s > 0
+    assert remaining_s > 0
+    assert ttft_s < total_s
+    # TPOT is the per-output-token cost
+    assert tpot_s == pytest.approx(0.020)
+
+
+def test_phases_single_token_has_no_remaining_decode():
+    sim = make_sim()
+    ttft_s, remaining_s, total_s, _ = sim.estimate_phases_s(
+        prompt_tokens=1, max_tokens=1
+    )
+    assert remaining_s == 0.0
+    assert ttft_s == pytest.approx(total_s)
+
+
+async def test_generate_populates_serving_metrics():
+    sim = make_sim(
+        max_concurrency=2,
+        base_latency_ms=0,
+        per_prompt_token_ms=0,
+        per_output_token_ms=10.0,
+    )
+    result = await sim.generate(prompt="hi there", max_tokens=3)
+    assert result.output_tokens == 3
+    assert result.ttft_s == pytest.approx(0.010)   # first token only
+    assert result.tpot_s == pytest.approx(0.010)
+    assert result.decode_s == pytest.approx(0.030)  # 3 tokens × 10 ms
+    assert result.tokens_per_s == pytest.approx(3 / 0.030)
+
+
 async def test_concurrency_cap_respected():
     sim = make_sim(
         max_concurrency=2,

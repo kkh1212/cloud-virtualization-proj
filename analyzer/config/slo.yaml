@@ -1,0 +1,24 @@
+# Service Level Objectives. These define what "appropriate" means for the
+# autoscaling/right-sizing question: a run meets its SLO or it doesn't.
+# Targets are upper bounds (lower is better) except where noted. Tune per the
+# scenario you run. A target that has no matching metric in the run is skipped,
+# not failed (same gating philosophy as the rule engine).
+profiles:
+  default:
+    p95_latency_seconds: 3.0      # end-to-end p95 must stay under 3s
+    p99_latency_seconds: 5.0      # end-to-end p99 must stay under 5s
+    ttft_p95_seconds: 1.0         # time-to-first-token p95 under 1s
+    error_rate_max: 0.05          # failed-request fraction under 5%
+    notes: "Balanced default for short/mixed traffic."
+  strict:
+    p95_latency_seconds: 2.0
+    p99_latency_seconds: 3.0
+    ttft_p95_seconds: 0.5
+    error_rate_max: 0.01
+    notes: "Tight interactive SLO; expect breaches under burst without autoscaling."
+  long_context:
+    p95_latency_seconds: 10.0
+    p99_latency_seconds: 15.0
+    ttft_p95_seconds: 2.0
+    error_rate_max: 0.05
+    notes: "Relaxed latency for long_prompt / large-output workloads."
