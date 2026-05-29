@@ -1384,3 +1384,305 @@ CPU HPA vs KEDA 비교 리포트 가능
 GitHub Actions CI 추가
 GPU 서버 이관 체크리스트 추가
 ```
+
+---
+
+## 21. 프로젝트 전체 방향 - 워크로드 맞춤형 LLM 인프라 진단
+
+이 프로젝트의 핵심 목표는 단순히 LLM 서버를 Kubernetes에 올리는 것이 아니라, **사용하려는 LLM 서비스의 워크로드 특성에 현재 인프라 설정이 적합한지 부하 테스트와 메트릭으로 판단하는 것**입니다.
+
+일반적인 웹 서비스와 달리 LLM inference 서비스는 요청의 형태에 따라 병목이 크게 달라집니다.
+
+```text
+짧은 프롬프트 + 짧은 응답이 많은 서비스
+→ 요청 수, queue, replica 수, autoscaling 반응 속도가 중요
+
+긴 프롬프트 또는 긴 context를 주로 쓰는 서비스
+→ TTFT, prefill 비용, KV cache, GPU memory, timeout이 중요
+
+짧은 프롬프트지만 긴 답변을 생성하는 서비스
+→ decode 시간, TPOT, output token throughput, p95/p99 latency가 중요
+
+실제 운영처럼 여러 요청 유형이 섞이는 서비스
+→ 평균 latency보다 p95/p99 long-tail, 특정 요청군 병목이 중요
+```
+
+따라서 모든 LLM 서비스를 "무조건 빠르게" 처리하도록 과하게 설정하는 것이 목표가 아닙니다. 그렇게 하면 비용이 커집니다. 이 프로젝트가 보고 싶은 것은 **서비스의 실제 사용 패턴에 맞게 적당한 성능과 적당한 비용의 균형점을 찾는 것**입니다.
+
+### 21.1 이 프로젝트가 답하려는 질문
+
+부하 테스트 결과를 기반으로 다음 질문에 답하는 것이 목표입니다.
+
+```text
+이 서비스는 짧은 요청이 많은 서비스인가, 긴 context가 많은 서비스인가?
+현재 replica 수와 max concurrency는 이 workload에 적합한가?
+CPU 기반 HPA가 충분한가, queue 기반 KEDA autoscaling이 필요한가?
+지연이 생겼을 때 원인은 CPU인가, queue인가, Pod 준비 지연인가?
+vLLM/GPU 환경에서는 GPU compute 병목인가, GPU memory/KV cache 압박인가?
+설정을 바꾸면 latency는 얼마나 줄고 비용은 얼마나 늘어나는가?
+현재 설정이 이 서비스에 과한가, 부족한가, 아니면 적절한가?
+```
+
+즉 최종적으로는 다음과 같은 판단을 돕는 플랫폼을 지향합니다.
+
+```text
+현재 설정은 short_prompt 중심 서비스에는 적합하지만,
+long_context 서비스에서는 TTFT와 KV cache 압박 때문에 부적합하다.
+
+또는
+
+현재 CPU HPA 설정은 평균 CPU가 낮아 scale-out하지 못하므로,
+요청 queue가 중요한 이 서비스에는 KEDA queue autoscaling이 더 적합하다.
+
+또는
+
+max concurrency를 높이면 throughput은 늘지만 p99 latency와 GPU memory 사용률이 악화되므로,
+이 workload에서는 replica 증가가 더 안전하다.
+```
+
+### 21.2 현재 구현된 실험 구조
+
+현재 구현된 MVP/확장 흐름은 다음과 같습니다.
+
+```text
+k6 load test
+  -> mock-llm 또는 향후 vLLM
+  -> Kubernetes Deployment / Service / HPA or KEDA
+  -> Prometheus metrics
+  -> analyzer rule engine
+  -> report.md / report.json
+  -> before-after comparison
+```
+
+현재는 실제 vLLM/GPU 서버로 가기 전 단계로, `mock-llm`이 LLM 서비스에서 자주 나타나는 운영 현상을 재현합니다.
+
+```text
+동시 처리량 제한
+요청 대기 queue
+queue timeout
+TTFT
+TPOT
+token throughput
+batch size
+KV-cache usage proxy
+p95/p99 latency 증가
+```
+
+이 mock 환경을 통해 Kubernetes, Prometheus, Grafana, analyzer, KEDA 비교 리포트가 end-to-end로 동작하는지 먼저 검증했습니다.
+
+### 21.3 부하 시나리오와 워크로드 의미
+
+현재 k6 부하 시나리오는 워크로드 특성별로 나뉘어 있습니다.
+
+| 시나리오 | 의미 | 주로 확인하는 것 |
+|---|---|---|
+| `short_prompt` | 짧은 질문과 짧은 응답이 많은 baseline 서비스 | 낮은 latency, 낮은 queue, 정상 throughput |
+| `long_prompt` | 긴 prompt와 긴 output을 처리하는 서비스 | 요청 자체의 latency, TTFT/TPOT, long-context 부담 |
+| `mixed_workload` | 짧은 QA, 긴 요약, 코드 생성 요청이 섞인 실제 운영형 트래픽 | p95/p99 long-tail, 일부 무거운 요청의 영향 |
+| `burst_traffic` | 순간적으로 요청이 몰리는 spike 상황 | queue bottleneck, error, HPA/KEDA 반응 한계 |
+| `sustained_ramp` | 점진적으로 부하가 올라가는 autoscaling 검증용 상황 | scale-out이 제때 되는지, ready replica가 따라오는지 |
+
+이 시나리오들은 단순히 "서버가 버티는지"만 보는 것이 아니라, **어떤 워크로드에서 어떤 지표가 나빠지는지**를 보기 위한 것입니다.
+
+예를 들어:
+
+```text
+short_prompt에서 requests_waiting과 p95가 높다
+→ 요청 수에 비해 처리 capacity 또는 autoscaling이 부족할 가능성
+
+long_prompt에서 queue는 낮은데 TTFT와 p95가 높다
+→ 요청 자체가 무겁거나 prefill/context 처리 부담이 큰 workload
+
+mixed_workload에서 평균은 괜찮은데 p99가 높다
+→ 일부 긴 요청이 long-tail latency를 만들 가능성
+
+sustained_ramp에서 desired replica는 늘지만 ready replica가 늦다
+→ scale_out_lag, Pod startup/readiness 또는 image pull 지연 가능성
+```
+
+### 21.4 analyzer가 보는 주요 지표
+
+analyzer는 Prometheus의 시계열을 읽어 리포트를 만듭니다.
+
+성능 지표:
+
+```text
+avg_latency
+p95_latency
+p99_latency
+error_rate
+throughput
+```
+
+LLM 서비스 지표:
+
+```text
+requests_running
+requests_waiting
+TTFT p95
+TPOT p95
+prompt token throughput
+output token throughput
+batch size
+KV-cache usage proxy
+```
+
+Kubernetes / autoscaling 지표:
+
+```text
+replicas_desired
+replicas_ready
+pod_pending_count
+cpu_usage_ratio
+memory_bytes
+```
+
+향후 vLLM/GPU 환경에서 추가할 지표:
+
+```text
+GPU utilization
+GPU memory used ratio
+vLLM KV cache usage
+vLLM waiting/running requests
+vLLM token throughput
+```
+
+이 지표 조합으로 analyzer는 단순히 "느리다"가 아니라, 왜 느린지에 대한 근거를 제시합니다.
+
+```text
+queue_bottleneck
+→ requests_waiting과 p95 latency가 함께 높음
+
+hpa_limitation
+→ CPU는 낮은데 queue와 latency는 높고 replica가 늘지 않음
+
+scale_out_lag
+→ desired replica는 늘었지만 ready replica가 늦게 따라옴
+
+cpu_bottleneck
+→ CPU 사용률과 latency가 함께 높음
+
+gpu_compute / gpu_memory / gpu_scheduling
+→ GPU metric이 연결된 뒤 실제 GPU 병목 판단에 사용
+```
+
+### 21.5 사용하는 도구와 오픈소스 역할
+
+| 도구 / 오픈소스 | 현재 역할 |
+|---|---|
+| Kubernetes / k3s | LLM 서비스 컨테이너를 Pod/Deployment/Service/HPA로 관리하는 실험 환경 |
+| Docker | mock-llm 이미지를 빌드하고 k3s runtime에 import |
+| k6 | 짧은 프롬프트, 긴 프롬프트, burst, sustained ramp 등 부하 생성 |
+| FastAPI | 현재 `mock-llm` API 서버 구현 |
+| prometheus-client | mock-llm의 `/metrics` 노출 |
+| kube-prometheus-stack | Prometheus, Grafana, kube-state-metrics, node-exporter 설치 |
+| Prometheus | mock-llm, Kubernetes, container metric 수집 및 PromQL 제공 |
+| Grafana | 실험 중 latency, queue, replica, resource 지표 시각화 |
+| kube-state-metrics | Deployment replica, Pod phase 등 Kubernetes 상태 지표 제공 |
+| metrics-server | CPU HPA resource metric 동작 확인에 필요 |
+| KEDA | `mock_llm_requests_waiting` 같은 queue metric 기반 autoscaling |
+| Python analyzer | Prometheus query_range 수집, rule 평가, Markdown/JSON 리포트 생성 |
+| vLLM | 향후 실제 LLM inference server로 교체할 대상 |
+| DCGM exporter | NVIDIA GPU 환경에서 GPU utilization/memory 지표 수집 예정 |
+| OpenCost | 향후 Kubernetes 비용 지표를 수집해 cost per request/token 분석에 활용 예정 |
+
+현재 비용 기능은 OpenCost 직접 연동 전 단계입니다. `analyzer/config/cost.yaml`의 수동 단가 profile을 기반으로 다음 값을 추정합니다.
+
+```text
+estimated run cost
+cost per 1K requests
+cost per 1K tokens
+avg billable replicas
+```
+
+### 21.6 워크로드별 적합성 판단 방향
+
+앞으로 analyzer는 단일 SLO 판정뿐 아니라, 워크로드 유형별 적합성 평가로 확장할 수 있습니다.
+
+예시 profile:
+
+```text
+short_interactive
+long_context
+decode_heavy
+mixed_production
+burst_sensitive
+```
+
+각 profile은 서로 다른 기준을 가질 수 있습니다.
+
+| 워크로드 profile | 중요한 기준 | 부적합 신호 |
+|---|---|---|
+| `short_interactive` | p95 latency, queue, throughput, cost/request | requests_waiting 증가, p95 급등, scale-out 지연 |
+| `long_context` | TTFT, KV cache, GPU memory, timeout | TTFT 초과, memory/KV 압박, p99 악화 |
+| `decode_heavy` | TPOT, output token throughput, p99 latency | TPOT 상승, output throughput 한계 |
+| `mixed_production` | p95/p99 long-tail, error rate, 비용 | 평균은 정상이나 p99가 높음 |
+| `burst_sensitive` | spike 흡수력, KEDA 반응 속도, ready replica 지연 | burst 중 queue timeout, scale_out_lag |
+
+이 방향의 최종 리포트는 다음처럼 읽히는 것이 목표입니다.
+
+```text
+워크로드 유형: long_context
+판정: 현재 설정은 부분 부적합
+
+근거:
+- TTFT p95가 목표를 초과
+- p99 latency가 long_context SLO를 초과
+- KV cache/GPU memory 압박 가능성
+
+권장:
+- 더 큰 VRAM GPU 사용 검토
+- max concurrency 하향 또는 replica 분리
+- max_model_len / max_num_batched_tokens 조정
+- long-context 전용 Deployment 분리
+```
+
+또는:
+
+```text
+워크로드 유형: short_interactive
+판정: CPU HPA 설정은 부적합, KEDA queue autoscaling 권장
+
+근거:
+- CPU 사용률은 낮음
+- requests_waiting은 높음
+- p95 latency가 상승
+- replicas_desired가 증가하지 않음
+
+권장:
+- queue 기반 KEDA autoscaling 사용
+- KEDA threshold 하향
+- minReplicaCount 상향
+- maxReplicaCount 상향
+```
+
+### 21.7 현재 상태와 다음 목표
+
+현재까지는 다음을 검증했습니다.
+
+```text
+mock-llm 기반 LLM-like workload 재현
+k6 부하 테스트
+Prometheus/Grafana 수집 및 시각화
+CPU HPA baseline 실험
+KEDA queue autoscaling 실험
+CPU HPA vs KEDA 비교 리포트
+SLO 판정
+추천 설정 생성
+수동 비용 profile 기반 비용 추정
+fixture replay 기반 analyzer 테스트
+```
+
+다음 단계는 실제 운영 환경에 더 가까워지는 것입니다.
+
+```text
+mock-llm을 vLLM으로 교체
+vLLM Prometheus metric을 analyzer/config/metrics.yaml에 연결
+GPU metric exporter 연결
+GPU compute / memory / scheduling rule 실측 검증
+OpenCost 기반 실제 비용 metric 연결
+워크로드 profile별 적합성 평가 섹션 추가
+설정 A/B 비교를 통해 성능-비용 tradeoff를 더 명확히 표시
+```
+
+정리하면 이 프로젝트는 **LLM 서비스를 Kubernetes에서 운영할 때, 현재 인프라와 설정이 사용하려는 워크로드에 맞는지 부하 테스트로 검증하고, 병목과 개선 방향을 리포트로 설명하는 플랫폼**을 목표로 합니다.
