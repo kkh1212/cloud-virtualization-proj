@@ -27,5 +27,5 @@ class GpuMemory(Rule):
                 "gpu_mem_ratio_min": gpu_mem_ratio_min,
                 "p95_min_seconds": p95_min,
             },
-            suggestion="GPU memory / KV cache 압박. max_tokens 제한 / quantization / GPU memory 증설",
+            suggestion="GPU memory or KV cache pressure is high. Consider shorter contexts, quantization, or a larger GPU.",
         )

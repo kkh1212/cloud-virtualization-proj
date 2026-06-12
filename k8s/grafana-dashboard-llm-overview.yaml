@@ -745,9 +745,20 @@ data:
               "legendFormat": "inter-token p95 (TPOT)",
               "range": true,
               "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(mock_llm_queue_wait_seconds_bucket[1m])) by (le))",
+              "legendFormat": "queue wait p95",
+              "range": true,
+              "refId": "C"
             }
           ],
-          "title": "LLM Serving: TTFT / TPOT (p95)",
+          "title": "LLM Serving: TTFT / TPOT / queue wait (p95)",
           "type": "timeseries"
         },
         {
@@ -850,9 +861,53 @@ data:
               "legendFormat": "KV-cache ratio (proxy)",
               "range": true,
               "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(mock_llm_prompt_tokens_per_request_bucket[1m])) by (le))",
+              "legendFormat": "prompt tokens/request p95",
+              "range": true,
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum(rate(mock_llm_output_tokens_per_request_bucket[1m])) by (le))",
+              "legendFormat": "output tokens/request p95",
+              "range": true,
+              "refId": "D"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(mock_llm_prompt_tokens_total[1m]))",
+              "legendFormat": "prompt tokens/sec",
+              "range": true,
+              "refId": "E"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(mock_llm_output_tokens_total[1m]))",
+              "legendFormat": "output tokens/sec",
+              "range": true,
+              "refId": "F"
             }
           ],
-          "title": "Batch size / KV-cache (proxy)",
+          "title": "Batch / KV-cache / token volume",
           "type": "timeseries"
         }
       ],

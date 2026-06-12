@@ -31,7 +31,7 @@ bash scripts/run-experiment.sh short_prompt
 
 ### 가설
 
-latency-only 시그니처다. 긴 프롬프트와 큰 출력 토큰으로 요청 자체는 오래 걸리지만, capacity 미만의 동시성이라 queue 병목은 아니다.
+legacy combined long 시나리오다. 긴 입력과 긴 출력을 함께 사용해 요청 자체가 오래 걸리는지 확인한다. 신규 실험에서는 prefill/TTFT와 decode/TPOT를 분리하기 위해 `long_input`, `long_output`을 우선 사용한다.
 
 ### 실행
 
@@ -51,6 +51,69 @@ bash scripts/run-experiment.sh long_prompt
 ### 기대 분석 리포트
 
 `cpu_bottleneck`과 `queue_bottleneck` 모두 미trigger가 기대된다. 현재 룰 셋에서는 단순 latency-only 상황을 "정상 동작"으로 분류한다.
+
+## long_input
+
+### 가설
+
+긴 context가 들어오면 prefill 부담이 커져 TTFT와 prompt tokens/request가 증가한다. 출력 길이는 중간으로 제한해 decode 병목과 분리한다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh long_input
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| prompt tokens/request p95 | 4000 이상 |
+| TTFT p95 | short_prompt 대비 증가 |
+| queue wait p95 | capacity 안에서는 낮음 |
+| output tokens/request p95 | long_output보다 낮음 |
+
+## long_output
+
+### 가설
+
+입력은 짧거나 중간이지만 긴 출력을 생성하므로 TPOT, output token throughput, E2E latency가 중요해진다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh long_output
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| output tokens/request p95 | 1000 근처 |
+| inter-token latency p95 | 안정적으로 유지되어야 함 |
+| output token throughput | short_prompt 대비 증가 |
+| p95/p99 latency | short_prompt 대비 증가 |
+
+## rag_like
+
+### 가설
+
+짧은 사용자 질문에 긴 검색 context가 붙는 RAG형 요청이다. 사용자 입력은 짧지만 실제 prompt token 수는 길어져 `long_input`과 유사한 TTFT 패턴을 보일 수 있다.
+
+### 실행
+
+```bash
+bash scripts/run-experiment.sh rag_like
+```
+
+### 기대 메트릭
+
+| 항목 | 기대값 |
+|---|---|
+| prompt tokens/request p95 | 4000 이상 |
+| TTFT p95 | short_prompt 대비 증가 |
+| p95/p99 latency | context 길이에 따라 증가 |
+| queue wait p95 | 동시성이 capacity 안이면 낮음 |
 
 ## burst_traffic (normal)
 
@@ -108,6 +171,34 @@ bash scripts/run-experiment.sh burst_traffic --high
 - 다양한 HPA CPU target 값으로 CPU 기반 autoscaling의 반응성을 비교한다.
 - 다양한 queue timeout 값으로 실패율과 p95 latency의 trade-off를 비교한다.
 - 결과를 `reports/`에 누적한 뒤 향후 diff 도구로 scenario별 리포트를 비교한다.
+
+## Pre-GPU 실험 매트릭스
+
+GPU/vLLM으로 넘어가기 전에는 mock 환경에서 다음 실험을 최종 기준으로 본다.
+
+| 구분 | 시나리오 | 목적 |
+|---|---|---|
+| baseline | `short_prompt` | 짧은 요청의 정상 latency/queue 기준선 |
+| context-heavy | `long_input` | 긴 입력이 TTFT/prefill에 주는 영향 |
+| decode-heavy | `long_output` | 긴 출력이 TPOT/output throughput에 주는 영향 |
+| RAG형 | `rag_like` | 짧은 질문 + 긴 context 서비스 패턴 |
+| production-like | `mixed_workload` | 요청 유형이 섞일 때 p95/p99 long-tail |
+| spike | `burst_traffic` | 순간 queue bottleneck과 recovery |
+| autoscaling | `sustained_ramp` | CPU HPA와 KEDA의 scale-out 차이 |
+
+공통 확인 지표:
+
+```text
+k6 p50/p95/p99 latency
+requests_waiting max
+queue wait p95
+TTFT p95
+TPOT p95
+prompt/output tokens per request p95
+prompt/output token throughput
+error rate
+desired/ready replica 변화
+```
 
 
 ## CPU HPA vs KEDA queue autoscaling
@@ -189,4 +280,3 @@ cat "$KEDA_RUN/comparison.md"
 | `report.md` `## 9. 권장 설정` | KEDA threshold/replica/리소스/concurrency 정량 추천 |
 | `comparison.md` | max waiting↓, p95/p99 peak↓, desired/ready replicas max↑, hpa_limitation removed |
 | `mixed_workload` | 멀티모달에서 p95/p99 long tail, TTFT/TPOT 가 shape 별로 변동 |
-

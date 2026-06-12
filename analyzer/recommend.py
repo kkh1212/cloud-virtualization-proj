@@ -38,6 +38,7 @@ def build_recommendations(
     diagnosis: list,
     slo_evaluation: dict[str, Any] | None,
     config: dict[str, Any],
+    workload_fit: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     current = config.get("current", {})
     tuning = config.get("tuning", {})
@@ -49,7 +50,66 @@ def build_recommendations(
     _recommend_memory_request(recs, snapshot, current, tuning)
     _recommend_autoscaler(recs, snapshot, current, triggered, slo_breached)
     _recommend_concurrency(recs, snapshot, current, tuning, triggered)
+    _apply_workload_awareness(recs, workload_fit)
     return recs
+
+
+# Computed-rec target -> coarse category, matched against the workload bottleneck so
+# the most relevant computed recommendation surfaces first.
+def _rec_category(target: str) -> str:
+    t = target.lower()
+    if "autoscaler" in t or "keda" in t or "concurrency" in t:
+        return "queue"
+    if "cpu" in t:
+        return "compute"
+    if "memory" in t:
+        return "memory"
+    return "other"
+
+
+_BOTTLENECK_REC_MATCH: dict[str, set[str]] = {
+    "queue": {"queue"},
+    "gpu_memory": {"memory"},
+    "gpu_compute": {"compute"},
+    "latency": {"queue", "compute"},
+    "prefill": set(),   # relieved by playbook advice only (context/top_k/...)
+    "decode": set(),    # relieved by playbook advice only (max_tokens/streaming/...)
+}
+
+
+def _apply_workload_awareness(
+    recs: list[dict[str, Any]],
+    workload_fit: dict[str, Any] | None,
+) -> None:
+    """Prioritize the bottleneck-relevant computed recs and append the workload's
+    advisory playbook (config that the analyzer cannot compute, e.g. top_k/max_tokens)."""
+    for rec in recs:
+        rec.setdefault("priority", "normal")
+    if not workload_fit:
+        return
+
+    bottleneck = workload_fit.get("bottleneck")
+    match = _BOTTLENECK_REC_MATCH.get(bottleneck, set()) if bottleneck else set()
+    for rec in recs:
+        if bottleneck and _rec_category(rec.get("target", "")) in match:
+            rec["priority"] = "high"
+
+    advice = (workload_fit.get("recommendations") or {}).get(bottleneck, []) if bottleneck else []
+    workload = workload_fit.get("workload")
+    for text in advice:
+        recs.append(
+            {
+                "target": f"[{bottleneck}] 워크로드 권장",
+                "current": "-",
+                "recommended": text,
+                "rationale": f"워크로드 '{workload}' 적합성 기반 advisory (계산값 아님).",
+                "priority": "high",
+                "advisory": True,
+            }
+        )
+
+    # Stable sort: high-priority first, original order preserved within each group.
+    recs.sort(key=lambda r: 0 if r.get("priority") == "high" else 1)
 
 
 def _recommend_cpu_request(recs, snapshot, current, tuning) -> None:

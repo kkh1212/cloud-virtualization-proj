@@ -7,7 +7,12 @@ __pycache__/
 reports/
 .DS_Store
 
+# Pipeline B generated manifests (analyzer/provision.py): keep the dir, ignore output
+k8s/generated/*
+!k8s/generated/.gitkeep
+
 # Python tooling caches
+.tmp/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

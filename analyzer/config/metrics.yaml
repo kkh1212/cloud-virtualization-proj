@@ -10,6 +10,9 @@ metrics:
   output_token_rate: { promql: 'sum(rate(mock_llm_output_tokens_total[1m]))' }
   ttft_p95:          { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_time_to_first_token_seconds_bucket[1m])) by (le))' }
   tpot_p95:          { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_inter_token_latency_seconds_bucket[1m])) by (le))' }
+  queue_wait_p95:    { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_queue_wait_seconds_bucket[1m])) by (le))' }
+  prompt_tokens_p95: { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_prompt_tokens_per_request_bucket[1m])) by (le))' }
+  output_tokens_p95: { promql: 'histogram_quantile(0.95, sum(rate(mock_llm_output_tokens_per_request_bucket[1m])) by (le))' }
   batch_size_max:    { promql: 'max(mock_llm_batch_size)' }
   kv_cache_ratio:    { promql: 'avg(mock_llm_kv_cache_usage_ratio)' }
   cpu_usage_ratio:   { promql: 'sum(rate(container_cpu_usage_seconds_total{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm"}[1m])) / sum(kube_pod_container_resource_requests{namespace="llm-ops",pod=~"mock-llm-.*",container="mock-llm",resource="cpu"})' }
@@ -18,6 +21,6 @@ metrics:
   replicas_ready:    { promql: 'kube_deployment_status_replicas_ready{namespace="llm-ops",deployment="mock-llm"}' }
   pod_pending_count: { promql: 'sum(kube_pod_status_phase{namespace="llm-ops",phase="Pending"})' }
   # ----- GPU (future; uncomment when DCGM exporter is installed) -----
-  # gpu_utilization:       { promql: 'avg(DCGM_FI_DEV_GPU_UTIL{pod=~"mock-llm-.*"})' }
+  # gpu_utilization:       { promql: 'avg(DCGM_FI_DEV_GPU_UTIL{pod=~"mock-llm-.*"}) / 100' }
   # gpu_memory_used_ratio: { promql: 'avg(DCGM_FI_DEV_FB_USED) / (avg(DCGM_FI_DEV_FB_FREE) + avg(DCGM_FI_DEV_FB_USED))' }
   # kv_cache_usage_ratio:  { promql: 'avg(vllm:gpu_cache_usage_perc)' }

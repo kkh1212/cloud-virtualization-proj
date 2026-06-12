@@ -56,8 +56,10 @@ class Report(BaseModel):
     llm_state: dict[str, Any]
     k8s_state: dict[str, Any]
     resource_state: dict[str, Any]
+    k6: dict[str, Any] | None = None
     cost: dict[str, Any] | None = None
     slo: dict[str, Any] | None = None
+    workload_fit: dict[str, Any] | None = None
     recommendations: list[dict[str, Any]] = []
     diagnosis: list[RuleResult]
     improvements: list[str]

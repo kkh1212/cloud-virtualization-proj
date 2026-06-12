@@ -1,0 +1,306 @@
+# Service / workload suitability profiles.
+#
+# This file IS consumed by the analyzer (analyzer/workload.py) and the session
+# orchestrator (scripts/run-workload.sh via analyzer/workload_plan.py). For a chosen
+# workload (--workload <name>) it drives:
+#   - slo_profile : which analyzer/config/slo.yaml profile to auto-select
+#   - thresholds  : per-metric pass/fail targets -> suitable / partially / unsuitable
+#   - recommendations : bottleneck -> advisory playbook text (not computed numbers)
+#   - initial_config  : Pipeline B (analyzer/provision.py) initial K8s/LLM defaults
+#   - test_plan   : multi-phase load-test composition (common baseline + target + stress)
+#
+# threshold schema (keys are LOGICAL metric names from analyzer/config/metrics*.yaml):
+#   <metric>: { max: X }  -> upper bound, lower is better
+#   <metric>: { min: Y }  -> lower bound, higher is better
+#   optional: agg in {peak(=series.max), mean, min}  (default: peak for max, mean for min)
+#             weight (suitability-score weight, default 1)
+# A metric absent from the snapshot is SKIPPED (not failed) — same gating as the
+# rule engine, so GPU thresholds simply skip on the mock pipeline.
+#
+# test_plan schema: phase groups + levels.
+#   common_baseline / target_baseline : single {scenario, env}
+#   stress / operational              : list of {scenario, env, role}
+#   levels.{quick,standard,full}      : ordered list of the group keys to run
+# env keys map to each k6 scenario's __ENV.* knobs (e.g. RAG_CONTEXT_TOKENS, SHORT_VUS).
+profiles:
+  faq_chatbot:
+    description: "Short interactive chatbot or FAQ."
+    request_shape: "short input, short output"
+    primary_scenarios: ["short_prompt", "mixed_workload"]
+    watch_metrics: ["ttft_p95", "p95_latency", "requests_waiting", "output_token_rate"]
+    slo_profile: strict
+    thresholds:
+      ttft_p95:          { max: 1.0,  agg: peak, weight: 2 }
+      p95_latency:       { max: 3.0,  agg: peak, weight: 2 }
+      requests_waiting:  { max: 5,    agg: peak, weight: 1 }
+      output_token_rate: { min: 15,   agg: mean, weight: 1 }
+    recommendations:
+      queue:   ["minReplicas 상향", "max_tokens 제한", "KEDA queue 기반 autoscaling 적용", "short 전용 pool 분리"]
+      latency: ["더 작은 모델 검토", "max_tokens 제한"]
+    initial_config:
+      model_size_hint: small
+      max_tokens: 256
+      max_model_len: 4096
+      replicas: { min: 3, max: 12 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.85
+      request_timeout_seconds: 30
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: short_prompt, env: { SHORT_VUS: 6 } }
+      stress:
+        - { scenario: short_prompt,  env: { SHORT_VUS: 40 },           role: high_concurrency }
+        - { scenario: burst_traffic, env: { BURST_INTENSITY: high },   role: short_burst }
+      operational: [ { scenario: mixed_workload, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  customer_support:
+    description: "Short user question with customer/order/policy context."
+    request_shape: "short input plus medium context, medium output"
+    primary_scenarios: ["rag_like", "mixed_workload"]
+    watch_metrics: ["ttft_p95", "queue_wait_p95", "prompt_tokens_p95", "p95_latency"]
+    slo_profile: default
+    thresholds:
+      ttft_p95:          { max: 1.5,  agg: peak, weight: 2 }
+      p95_latency:       { max: 4.0,  agg: peak, weight: 2 }
+      queue_wait_p95:    { max: 1.0,  agg: peak, weight: 1 }
+      prompt_tokens_p95: { max: 2000, agg: peak, weight: 1 }
+    recommendations:
+      prefill: ["정책 context 길이 제한(max_context_tokens)", "중복 context 제거"]
+      queue:   ["minReplicas 상향", "KEDA queue 기반 autoscaling 적용"]
+      latency: ["max_tokens 제한", "더 작은 모델 검토"]
+    initial_config:
+      model_size_hint: small
+      max_tokens: 512
+      max_model_len: 8192
+      replicas: { min: 2, max: 10 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.88
+      request_timeout_seconds: 45
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 1000, RAG_VUS: 2 } }
+      stress:
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 500 },  role: context_500 }
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 1000 }, role: context_1k }
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000 }, role: context_2k }
+      operational: [ { scenario: burst_traffic, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  rag_internal_qa:
+    description: "Internal document QA with retrieved chunks attached to a short question."
+    request_shape: "short question, long retrieved context, medium output"
+    primary_scenarios: ["rag_like", "long_input", "mixed_workload"]
+    watch_metrics: ["ttft_p95", "prompt_tokens_p95", "queue_wait_p95", "p99_latency"]
+    slo_profile: long_context
+    thresholds:
+      ttft_p95:              { max: 2.5,  agg: peak, weight: 2 }
+      p99_latency:           { max: 15.0, agg: peak, weight: 2 }
+      prompt_tokens_p95:     { max: 6000, agg: peak, weight: 1 }
+      kv_cache_ratio:        { max: 0.90, agg: peak, weight: 1 }
+      gpu_memory_used_ratio: { max: 0.85, agg: peak, weight: 1 }   # vLLM only; skipped on mock
+    recommendations:
+      prefill:    ["top_k 감소", "chunk size 조정", "중복 context 제거", "max_context_tokens 제한"]
+      gpu_memory: ["VRAM 큰 GPU 사용", "max_model_len 조정", "RAG 전용 pool 분리"]
+      queue:      ["KEDA queue 기반 autoscaling 적용", "minReplicas 상향"]
+    initial_config:
+      model_size_hint: medium
+      max_tokens: 512
+      max_model_len: 16384
+      replicas: { min: 2, max: 8 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.90
+      request_timeout_seconds: 60
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 4000, RAG_VUS: 2 } }
+      stress:
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000 }, role: context_2k }
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 4000 }, role: context_4k }
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 8000 }, role: context_8k }
+      operational: [ { scenario: sustained_ramp, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  document_summary:
+    description: "Long document or meeting notes summarized into concise output."
+    request_shape: "long input, short or medium output"
+    primary_scenarios: ["long_input"]
+    watch_metrics: ["ttft_p95", "prompt_tokens_p95", "memory_bytes", "gpu_memory_used_ratio"]
+    slo_profile: long_context
+    thresholds:
+      ttft_p95:              { max: 3.0,  agg: peak, weight: 2 }
+      p99_latency:           { max: 15.0, agg: peak, weight: 1 }
+      prompt_tokens_p95:     { max: 8000, agg: peak, weight: 1 }
+      gpu_memory_used_ratio: { max: 0.90, agg: peak, weight: 2 }   # vLLM only; skipped on mock
+    recommendations:
+      prefill:    ["문서 분할 요약", "max input token 제한"]
+      gpu_memory: ["VRAM 큰 GPU 사용", "max_model_len/context budget 조정", "long_input 전용 pool 분리"]
+      latency:    ["request_timeout 상향", "max_tokens 제한"]
+    initial_config:
+      model_size_hint: medium
+      max_tokens: 512
+      max_model_len: 32768
+      replicas: { min: 1, max: 6 }
+      autoscaler: hpa_cpu
+      gpu_memory_utilization: 0.92
+      request_timeout_seconds: 120
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000, LONG_INPUT_MAX_TOKENS: 400, LONG_INPUT_VUS: 2 } }
+      stress:
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000 },  role: doc_4k }
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 8000 },  role: doc_8k }
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 16000 }, role: doc_16k }
+      operational: [ { scenario: sustained_ramp, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  long_generation:
+    description: "Reports, marketing copy, or long-form answer generation."
+    request_shape: "short or medium input, long output"
+    primary_scenarios: ["long_output", "mixed_workload"]
+    watch_metrics: ["tpot_p95", "output_tokens_p95", "output_token_rate", "gpu_utilization"]
+    slo_profile: long_context
+    thresholds:
+      tpot_p95:          { max: 0.05, agg: peak, weight: 2 }
+      output_token_rate: { min: 30,   agg: mean, weight: 2 }
+      p95_latency:       { max: 20.0, agg: peak, weight: 1 }
+      gpu_utilization:   { min: 0.50, agg: mean, weight: 1 }   # vLLM only; skipped on mock
+    recommendations:
+      decode:      ["max_tokens 제한", "streaming 응답 권장", "request_timeout 상향", "long_output 전용 pool 분리"]
+      gpu_compute: ["더 강한 GPU 사용", "병렬성(tensor/pipeline parallel) 검토"]
+      latency:     ["max_tokens 상한 명확화"]
+    initial_config:
+      model_size_hint: medium
+      max_tokens: 2048
+      max_model_len: 8192
+      replicas: { min: 2, max: 8 }
+      autoscaler: hpa_cpu
+      gpu_memory_utilization: 0.90
+      request_timeout_seconds: 120
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: long_output, env: { LONG_OUTPUT_MAX_TOKENS: 1000, LONG_OUTPUT_VUS: 2 } }
+      stress:
+        - { scenario: long_output, env: { LONG_OUTPUT_MAX_TOKENS: 500 },  role: output_500 }
+        - { scenario: long_output, env: { LONG_OUTPUT_MAX_TOKENS: 1000 }, role: output_1000 }
+        - { scenario: long_output, env: { LONG_OUTPUT_MAX_TOKENS: 2000 }, role: output_2000 }
+      operational: [ { scenario: mixed_workload, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  coding_assistant:
+    description: "Code/log analysis with medium-to-long context and sometimes long output."
+    request_shape: "medium or long input, medium or long output"
+    primary_scenarios: ["long_input", "long_output", "mixed_workload"]
+    watch_metrics: ["ttft_p95", "tpot_p95", "prompt_tokens_p95", "p99_latency"]
+    slo_profile: long_context
+    thresholds:
+      ttft_p95:          { max: 2.0,  agg: peak, weight: 1 }
+      tpot_p95:          { max: 0.06, agg: peak, weight: 1 }
+      p99_latency:       { max: 20.0, agg: peak, weight: 2 }
+      prompt_tokens_p95: { max: 6000, agg: peak, weight: 1 }
+    recommendations:
+      prefill: ["관련 코드만 선택", "파일 수 제한", "code context limit"]
+      decode:  ["output max_tokens 조정", "streaming 응답 권장"]
+      latency: ["coding 전용 pool 분리", "RAG 방식 코드 검색"]
+    initial_config:
+      model_size_hint: medium
+      max_tokens: 1536
+      max_model_len: 16384
+      replicas: { min: 2, max: 8 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.90
+      request_timeout_seconds: 90
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: long_input, env: { LONG_INPUT_TOKENS: 3000, LONG_INPUT_MAX_TOKENS: 600, LONG_INPUT_VUS: 2 } }
+      stress:
+        - { scenario: long_input,  env: { LONG_INPUT_TOKENS: 6000 },     role: code_context_6k }
+        - { scenario: long_output, env: { LONG_OUTPUT_MAX_TOKENS: 1500 }, role: code_gen_1500 }
+      operational: [ { scenario: mixed_workload, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  recommendation_explanation:
+    description: "LLM explains candidates produced by a recommender system."
+    request_shape: "short or medium structured context, medium output"
+    primary_scenarios: ["short_prompt", "mixed_workload"]
+    watch_metrics: ["p95_latency", "output_token_rate", "queue_wait_p95"]
+    slo_profile: default
+    thresholds:
+      p95_latency:       { max: 3.0, agg: peak, weight: 2 }
+      p99_latency:       { max: 5.0, agg: peak, weight: 1 }
+      output_token_rate: { min: 20,  agg: mean, weight: 1 }
+      queue_wait_p95:    { max: 1.0, agg: peak, weight: 1 }
+    recommendations:
+      queue:   ["minReplicas 상향", "short/medium 전용 pool 분리"]
+      latency: ["structured prompt 축약", "max_tokens 제한"]
+    initial_config:
+      model_size_hint: small
+      max_tokens: 512
+      max_model_len: 4096
+      replicas: { min: 3, max: 12 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.85
+      request_timeout_seconds: 30
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: short_prompt, env: { SHORT_VUS: 6 } }
+      stress:
+        - { scenario: short_prompt,  env: { SHORT_VUS: 30 }, role: high_rps }
+        - { scenario: burst_traffic, env: {},                role: short_burst }
+      operational: [ { scenario: mixed_workload, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]
+
+  tool_agent:
+    description: "Agent or tool-calling service where one user request may trigger multiple LLM calls."
+    request_shape: "multiple short-to-medium LLM calls per user request"
+    primary_scenarios: ["mixed_workload", "burst_traffic", "sustained_ramp"]
+    watch_metrics: ["p95_latency", "p99_latency", "requests_waiting", "scale_out_lag"]
+    slo_profile: default
+    thresholds:
+      p95_latency:      { max: 4.0, agg: peak, weight: 1 }
+      p99_latency:      { max: 8.0, agg: peak, weight: 2 }
+      requests_waiting: { max: 10,  agg: peak, weight: 1 }
+      queue_wait_p95:   { max: 2.0, agg: peak, weight: 1 }
+    recommendations:
+      queue:   ["minReplicas 상향", "KEDA queue 기반 autoscaling 적용", "burst/ramp threshold 조정", "scale-out lag 완화(probe/이미지 prepull)", "agent 전용 pool 분리"]
+      latency: ["p99 long-tail 유발 요청군 분리"]
+    initial_config:
+      model_size_hint: medium
+      max_tokens: 1024
+      max_model_len: 8192
+      replicas: { min: 3, max: 12 }
+      autoscaler: keda_queue
+      gpu_memory_utilization: 0.88
+      request_timeout_seconds: 60
+    test_plan:
+      common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
+      target_baseline: { scenario: mixed_workload, env: { MIXED_VUS: 6 } }
+      stress:
+        - { scenario: mixed_workload, env: { MIXED_VUS: 12 },        role: agent_mixed }
+        - { scenario: burst_traffic,  env: { BURST_INTENSITY: high }, role: burst }
+      operational: [ { scenario: sustained_ramp, env: {} } ]
+      levels:
+        quick:    [common_baseline, target_baseline]
+        standard: [common_baseline, target_baseline, stress]
+        full:     [common_baseline, target_baseline, stress, operational]

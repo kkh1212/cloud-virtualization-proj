@@ -9,6 +9,7 @@ from analyzer.rules import (
     ScaleOutLag,
 )
 from analyzer.rules._gpu_compute import GpuCompute
+from analyzer.rules._gpu_memory import GpuMemory
 from analyzer.rules._gpu_scheduling import GpuScheduling
 from analyzer.main import _build_report
 from analyzer.schemas import MetricSnapshot, TimeSeries
@@ -81,6 +82,40 @@ def test_gpu_scheduling_skips_without_gpu_metrics():
     )
 
     assert GpuScheduling().applies(snap) is False
+
+
+def test_gpu_compute_triggers_with_gpu_metric_fixture():
+    snap = snapshot(
+        gpu_utilization=ts("gpu_utilization", [0.90, 0.95, 0.92]),
+        p95_latency=ts("p95_latency", [1.0, 2.4, 2.8]),
+    )
+
+    assert GpuCompute().applies(snap) is True
+
+    result = GpuCompute().evaluate(
+        snap,
+        {"gpu_util_min": 0.85, "p95_min_seconds": 2.0},
+    )
+
+    assert result.triggered is True
+    assert result.evidence["mean_gpu_utilization"] > 0.85
+
+
+def test_gpu_memory_triggers_with_gpu_metric_fixture():
+    snap = snapshot(
+        gpu_memory_used_ratio=ts("gpu_memory_used_ratio", [0.88, 0.91, 0.93]),
+        p95_latency=ts("p95_latency", [1.5, 2.5, 2.7]),
+    )
+
+    assert GpuMemory().applies(snap) is True
+
+    result = GpuMemory().evaluate(
+        snap,
+        {"gpu_mem_ratio_min": 0.85, "p95_min_seconds": 2.0},
+    )
+
+    assert result.triggered is True
+    assert result.evidence["mean_gpu_memory_used_ratio"] > 0.85
 
 
 def test_cpu_bottleneck_triggers():

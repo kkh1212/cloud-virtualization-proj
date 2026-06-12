@@ -15,9 +15,10 @@
 //   k6 run loadtests/long_prompt.js
 
 import { sleep } from 'k6';
-import { buildPayload, chatCompletions, checkOk } from './lib/common.js';
+import { SUMMARY_TREND_STATS, buildPayloadByTokens, chatCompletions, checkOk } from './lib/common.js';
 
 export const options = {
+  summaryTrendStats: SUMMARY_TREND_STATS,
   scenarios: {
     long_prompt: {
       executor: 'constant-vus',
@@ -32,8 +33,16 @@ export const options = {
 };
 
 export default function () {
-  const payload = buildPayload({ promptChars: 2000, maxTokens: 512 });
-  const res = chatCompletions(payload);
+  const payload = buildPayloadByTokens({
+    inputTokens: 1000,
+    maxTokens: 512,
+    promptPrefix: 'legacy',
+  });
+  const res = chatCompletions(payload, {
+    scenario_type: 'long_prompt',
+    prompt_type: 'long',
+    output_type: 'long_output',
+  });
   checkOk(res);
   sleep(0.5);
 }

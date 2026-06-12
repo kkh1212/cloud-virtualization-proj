@@ -16,19 +16,41 @@
 //   k6 run loadtests/mixed_workload.js
 //   BASE_URL=http://otherhost:8000 k6 run loadtests/mixed_workload.js
 
-import { buildPayload, chatCompletions, checkOk, expSleep, pickWeighted } from './lib/common.js';
+import { SUMMARY_TREND_STATS, buildPayloadByTokens, buildRagPayload, chatCompletions, checkOk, expSleep, pickWeighted } from './lib/common.js';
 
 // Weighted mix. Weights are relative, not percentages.
 const WORKLOADS = [
-  { weight: 60, value: { promptChars: 50,   maxTokens: 64,  label: 'short_qa' } },
-  { weight: 25, value: { promptChars: 2000, maxTokens: 512, label: 'long_summary' } },
-  { weight: 15, value: { promptChars: 400,  maxTokens: 256, label: 'code_gen' } },
+  {
+    weight: 60,
+    value: {
+      label: 'short_qa',
+      tags: { scenario_type: 'mixed', prompt_type: 'short', output_type: 'short_output' },
+      payload: () => buildPayloadByTokens({ inputTokens: 100, maxTokens: 100 }),
+    },
+  },
+  {
+    weight: 25,
+    value: {
+      label: 'rag_like',
+      tags: { scenario_type: 'mixed', prompt_type: 'rag', output_type: 'medium_output' },
+      payload: () => buildRagPayload({ questionTokens: 50, contextTokens: 2500, maxTokens: 500 }),
+    },
+  },
+  {
+    weight: 15,
+    value: {
+      label: 'long_generation',
+      tags: { scenario_type: 'mixed', prompt_type: 'medium', output_type: 'long_output' },
+      payload: () => buildPayloadByTokens({ inputTokens: 300, maxTokens: 900, promptPrefix: 'generate' }),
+    },
+  },
 ];
 
 // Mean think-time between a VU's requests, in seconds (exponential).
 const THINK_MEAN_S = Number(__ENV.MIXED_THINK_MEAN_S || '0.5');
 
 export const options = {
+  summaryTrendStats: SUMMARY_TREND_STATS,
   scenarios: {
     mixed_workload: {
       executor: 'constant-vus',
@@ -40,13 +62,17 @@ export const options = {
     // Lenient: this is a heterogeneous mix, so a single tight latency bound
     // would be meaningless. We still guard against mass failure.
     http_req_failed: ['rate<0.10'],
+    // High ceilings keep the scenario advisory while forcing k6 to include
+    // tag-specific submetrics in summary exports.
+    'http_req_duration{prompt_type:short}': ['p(95)<60000'],
+    'http_req_duration{prompt_type:rag}': ['p(95)<60000'],
+    'http_req_duration{output_type:long_output}': ['p(95)<60000'],
   },
 };
 
 export default function () {
   const shape = pickWeighted(WORKLOADS);
-  const payload = buildPayload({ promptChars: shape.promptChars, maxTokens: shape.maxTokens });
-  const res = chatCompletions(payload);
+  const res = chatCompletions(shape.payload(), shape.tags);
   checkOk(res);
   expSleep(THINK_MEAN_S);
 }

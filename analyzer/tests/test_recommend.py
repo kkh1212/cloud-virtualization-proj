@@ -111,6 +111,34 @@ def test_healthy_run_yields_no_recommendations():
     assert build_recommendations(snapshot(), [], None, CONFIG) == []
 
 
+def test_workload_bottleneck_prioritizes_and_appends_playbook():
+    snap = snapshot(
+        requests_waiting=ts("requests_waiting", [40]),
+        cpu_usage_ratio=ts("cpu_usage_ratio", [0.1]),
+    )
+    workload_fit = {
+        "workload": "faq_chatbot",
+        "bottleneck": "queue",
+        "recommendations": {"queue": ["replica 증가", "KEDA queue 적용"]},
+    }
+    recs = build_recommendations(
+        snap, [rule("queue_bottleneck")], None, CONFIG, workload_fit=workload_fit
+    )
+    # advisory playbook entries appended
+    assert any(r.get("advisory") and "replica 증가" in r["recommended"] for r in recs)
+    # the queue-category computed rec (concurrency) is marked high priority
+    conc = next(r for r in recs if r["target"] == "env.MOCK_LLM_MAX_CONCURRENCY")
+    assert conc["priority"] == "high"
+    # high-priority recs surface first
+    assert recs[0]["priority"] == "high"
+
+
+def test_workload_none_leaves_recs_normal_priority():
+    snap = snapshot(cpu_usage_ratio=ts("cpu_usage_ratio", [0.05]))
+    recs = build_recommendations(snap, [], None, CONFIG)
+    assert all(r.get("priority") == "normal" for r in recs)
+
+
 def test_report_renders_recommendation_section():
     snap = snapshot()
     report = _build_report(

@@ -32,6 +32,13 @@ def render_markdown(report: Report) -> str:
         f"| error rate peak | {_fmt(report.performance.get('error_rate_peak'))} |",
         f"| throughput avg | {_fmt(report.performance.get('throughput_avg_rps'))} req/s |",
         f"| throughput peak | {_fmt(report.performance.get('throughput_peak_rps'))} req/s |",
+        f"| k6 latency p50 | {_fmt_ms(_k6(report, 'http_req_duration_p50_ms'))} |",
+        f"| k6 latency p95 | {_fmt_ms(_k6(report, 'http_req_duration_p95_ms'))} |",
+        f"| k6 latency p99 | {_fmt_ms(_k6(report, 'http_req_duration_p99_ms'))} |",
+        f"| k6 failed rate | {_fmt_percent(_k6(report, 'http_req_failed_rate'))} |",
+        f"| k6 checks success rate | {_fmt_percent(_k6(report, 'checks_success_rate'))} |",
+        f"| k6 request count | {_fmt(_k6(report, 'request_count'))} |",
+        f"| k6 VU peak | {_fmt(_k6(report, 'vus_peak'))} |",
         "",
         "## 3. LLM 상태",
         "",
@@ -43,6 +50,9 @@ def render_markdown(report: Report) -> str:
         f"| output token throughput avg | {_fmt(report.llm_state.get('output_token_rate_avg'))} tok/s |",
         f"| TTFT p95 (peak) | {_fmt_seconds(report.llm_state.get('ttft_p95_peak_seconds'))} |",
         f"| inter-token latency p95 (peak) | {_fmt_seconds(report.llm_state.get('tpot_p95_peak_seconds'))} |",
+        f"| queue wait p95 (peak) | {_fmt_seconds(report.llm_state.get('queue_wait_p95_peak_seconds'))} |",
+        f"| prompt tokens/request p95 | {_fmt(report.llm_state.get('prompt_tokens_per_request_p95'))} |",
+        f"| output tokens/request p95 | {_fmt(report.llm_state.get('output_tokens_per_request_p95'))} |",
         f"| max batch size | {_fmt(report.llm_state.get('max_batch_size'))} |",
         f"| KV-cache 사용률 avg (proxy) | {_fmt(report.llm_state.get('kv_cache_ratio_avg'))} |",
         "",
@@ -64,7 +74,11 @@ def render_markdown(report: Report) -> str:
         f"| CPU peak(request 대비) | {_fmt_ratio(report.resource_state.get('cpu_usage_ratio_peak'))} |",
         f"| memory avg | {_fmt_bytes(report.resource_state.get('memory_bytes_avg'))} |",
         f"| memory peak | {_fmt_bytes(report.resource_state.get('memory_bytes_peak'))} |",
-        "| GPU | 현재 미수집 |",
+        f"| GPU utilization avg | {_fmt_percent_ratio(report.resource_state.get('gpu_utilization_avg'))} |",
+        f"| GPU utilization peak | {_fmt_percent_ratio(report.resource_state.get('gpu_utilization_peak'))} |",
+        f"| GPU memory avg | {_fmt_percent_ratio(report.resource_state.get('gpu_memory_used_ratio_avg'))} |",
+        f"| GPU memory peak | {_fmt_percent_ratio(report.resource_state.get('gpu_memory_used_ratio_peak'))} |",
+        f"| GPU metric status | {_fmt(report.resource_state.get('gpu'))} |",
         "",
         "## 6. 비용 추정",
         "",
@@ -139,8 +153,11 @@ def render_markdown(report: Report) -> str:
             ]
         )
         for rec in report.recommendations:
+            target = rec.get('target')
+            if rec.get('priority') == 'high':
+                target = f"★ {target}"
             lines.append(
-                f"| {rec.get('target')} | {rec.get('current')} | "
+                f"| {target} | {rec.get('current')} | "
                 f"{rec.get('recommended')} | {rec.get('rationale')} |"
             )
         lines.append("")
@@ -150,11 +167,65 @@ def render_markdown(report: Report) -> str:
     else:
         lines.append("현재 수집 구간 기준 권장할 설정 변경이 없습니다.")
 
+    tagged_latency = (report.k6 or {}).get("tagged_latency_p95_ms", {})
+    if tagged_latency:
+        lines.extend(["", "### k6 요청 유형별 p95 latency", ""])
+        lines.extend(["| 요청 유형 | p95 |", "|---|---:|"])
+        for label, value in sorted(tagged_latency.items()):
+            lines.append(f"| {label} | {_fmt_ms(value)} |")
+
     lines.extend(["", "## 10. 개선 방향", ""])
     for item in report.improvements:
         lines.append(f"- {item}")
+
+    lines.extend(_render_workload_fit(report))
     lines.append("")
     return "\n".join(lines)
+
+
+_VERDICT_LABEL = {
+    "suitable": "적합(suitable)",
+    "partially_suitable": "부분 적합(partially_suitable)",
+    "unsuitable": "부적합(unsuitable)",
+}
+
+
+def _render_workload_fit(report: Report) -> list[str]:
+    lines = ["", "## 11. 워크로드 적합성 판정", ""]
+    fit = report.workload_fit
+    if not fit:
+        lines.append(
+            "워크로드가 지정되지 않았습니다. `--workload <name>` 으로 활성화할 수 있습니다."
+        )
+        return lines
+
+    verdict = fit.get("verdict")
+    label = _VERDICT_LABEL.get(verdict, "평가 항목 없음")
+    score = fit.get("score")
+    shape = fit.get("request_shape", "")
+    lines.append(f"- workload: `{fit.get('workload')}`" + (f" ({shape})" if shape else ""))
+    score_text = f" / score: {_fmt(score)} / 100" if score is not None else ""
+    bottleneck = fit.get("bottleneck")
+    bn_text = f" / 주요 병목: {bottleneck}" if bottleneck else ""
+    lines.append(f"- 종합 판정: **{label}**{score_text}{bn_text}")
+    lines.append("")
+
+    checks = fit.get("checks", [])
+    if checks:
+        lines.extend(["| 지표 | 목표 | 관측 | 판정 |", "|---|---|---|---|"])
+        for check in checks:
+            comparison = "≤" if check.get("direction") == "max" else "≥"
+            met = check.get("met")
+            mark = "미수집(SKIP)" if met is None else ("OK" if met else "FAIL")
+            observed = check.get("observed")
+            lines.append(
+                f"| {check.get('metric')} ({check.get('agg')}) "
+                f"| {comparison} {_fmt(check.get('target'))} "
+                f"| {'현재 미수집' if observed is None else _fmt(observed)} | {mark} |"
+            )
+    else:
+        lines.append("이 워크로드에 정의된 임계값이 없습니다.")
+    return lines
 
 
 def render_json(report: Report) -> str:
@@ -173,6 +244,27 @@ def _fmt_seconds(value: Any) -> str:
     if value is None:
         return "현재 미수집"
     return f"{float(value):.3f}s"
+
+
+def _fmt_ms(value: Any) -> str:
+    if value is None:
+        return "현재 미수집"
+    return f"{float(value):.1f}ms"
+
+
+def _fmt_percent(value: Any) -> str:
+    if value is None:
+        return "현재 미수집"
+    return f"{float(value) * 100:.2f}%"
+
+
+def _fmt_percent_ratio(value: Any) -> str:
+    if value is None:
+        return 'not collected'
+    number = float(value)
+    if number > 1:
+        return f"{number:.2f}%"
+    return f"{number * 100:.2f}%"
 
 
 def _fmt_ratio(value: Any) -> str:
@@ -197,3 +289,9 @@ def _fmt_money(value: Any, currency: Any) -> str:
     if value is None:
         return "현재 미수집"
     return f"{float(value):.6f} {currency}"
+
+
+def _k6(report: Report, key: str):
+    if not report.k6:
+        return None
+    return report.k6.get(key)

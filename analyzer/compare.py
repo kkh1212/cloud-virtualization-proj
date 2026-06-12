@@ -16,9 +16,25 @@ METRICS = [
     ("error_rate_peak", "performance", "error rate peak", "err/s", "lower"),
     ("throughput_avg_rps", "performance", "throughput avg", "req/s", "higher"),
     ("throughput_peak_rps", "performance", "throughput peak", "req/s", "higher"),
+    # LLM serving deltas (present once metrics.yaml / vLLM bindings collect them).
+    ("ttft_p95_peak_seconds", "llm_state", "TTFT p95 peak", "s", "lower"),
+    ("tpot_p95_peak_seconds", "llm_state", "TPOT p95 peak", "s", "lower"),
+    ("queue_wait_p95_peak_seconds", "llm_state", "queue wait p95 peak", "s", "lower"),
     ("max_waiting", "llm_state", "max waiting", "requests", "lower"),
+    ("max_batch_size", "llm_state", "batch size max", "", "neutral"),
+    ("prompt_token_rate_avg", "llm_state", "input tokens/s", "tok/s", "higher"),
+    ("output_token_rate_avg", "llm_state", "output tokens/s", "tok/s", "higher"),
+    ("kv_cache_ratio_avg", "llm_state", "KV cache ratio", "", "lower"),
+    # K8s / resource deltas.
     ("desired_replicas_max", "k8s_state", "desired replicas max", "replicas", "neutral"),
     ("ready_replicas_max", "k8s_state", "ready replicas max", "replicas", "neutral"),
+    ("pending_pod_max", "k8s_state", "pending pod max", "pods", "lower"),
+    ("cpu_usage_ratio_peak", "resource_state", "CPU peak", "ratio", "neutral"),
+    ("memory_bytes_peak", "resource_state", "memory peak", "B", "lower"),
+    # GPU deltas — skipped ("현재 미수집") on the mock pipeline, auto-appear under vLLM.
+    ("gpu_utilization_peak", "resource_state", "GPU util peak", "ratio", "higher"),
+    ("gpu_memory_used_ratio_peak", "resource_state", "GPU mem peak", "ratio", "lower"),
+    # cost delta: TODO (cost 비교는 이번 범위 제외).
 ]
 
 
@@ -84,6 +100,15 @@ def build_comparison(before_dir: Path, after_dir: Path) -> dict[str, Any]:
 
     before_rules = _triggered_rules(before)
     after_rules = _triggered_rules(after)
+    workload_fit = _workload_fit_change(before, after)
+    summary = _summary(metric_rows, before_rules, after_rules)
+    if workload_fit and workload_fit.get("improved") is not None:
+        arrow = "개선" if workload_fit["improved"] else "악화/유지"
+        summary.insert(
+            0,
+            f"워크로드 적합성: {workload_fit['before_verdict']} → "
+            f"{workload_fit['after_verdict']} ({arrow})",
+        )
     return {
         "scenario": before.scenario,
         "before_run": str(before_dir),
@@ -96,7 +121,8 @@ def build_comparison(before_dir: Path, after_dir: Path) -> dict[str, Any]:
             "removed": sorted(set(before_rules) - set(after_rules)),
             "unchanged": sorted(set(before_rules) & set(after_rules)),
         },
-        "summary": _summary(metric_rows, before_rules, after_rules),
+        "workload_fit": workload_fit,
+        "summary": summary,
     }
 
 
@@ -141,11 +167,26 @@ def render_markdown(comparison: dict[str, Any]) -> str:
             f"| after | {_fmt_list(rules['after'])} |",
             f"| added | {_fmt_list(rules['added'])} |",
             f"| removed | {_fmt_list(rules['removed'])} |",
-            "",
-            "## 4. 요약",
-            "",
         ]
     )
+
+    wf = comparison.get("workload_fit")
+    if wf:
+        lines.extend(
+            [
+                "",
+                "## 4. 워크로드 적합성 변화",
+                "",
+                "| 항목 | Before | After |",
+                "|---|---|---|",
+                f"| workload | {wf.get('workload')} | {wf.get('workload')} |",
+                f"| verdict | {wf.get('before_verdict')} | {wf.get('after_verdict')} |",
+                f"| score | {_fmt(wf.get('before_score'), '')} | {_fmt(wf.get('after_score'), '')} |",
+                f"| score delta | | {_fmt(wf.get('score_delta'), '')} |",
+            ]
+        )
+
+    lines.extend(["", "## 5. 요약", ""])
     for item in comparison["summary"]:
         lines.append(f"- {item}")
     lines.append("")
@@ -160,10 +201,38 @@ def _load_report(run_dir: Path) -> Report:
 
 
 def _metric(report: Report, section: str, key: str) -> float | None:
-    value = getattr(report, section).get(key)
+    container = getattr(report, section)
+    if container is None:  # optional sections (cost, workload_fit) may be unset
+        return None
+    value = container.get(key)
     if value is None:
         return None
     return float(value)
+
+
+_VERDICT_ORDER = {"unsuitable": 0, "partially_suitable": 1, "suitable": 2}
+
+
+def _workload_fit_change(before: Report, after: Report) -> dict[str, Any] | None:
+    b = before.workload_fit or {}
+    a = after.workload_fit or {}
+    if not b and not a:
+        return None
+    bv, av = b.get("verdict"), a.get("verdict")
+    bs, as_ = b.get("score"), a.get("score")
+    score_delta = (as_ - bs) if (bs is not None and as_ is not None) else None
+    improved = None
+    if bv in _VERDICT_ORDER and av in _VERDICT_ORDER:
+        improved = _VERDICT_ORDER[av] > _VERDICT_ORDER[bv]
+    return {
+        "workload": a.get("workload") or b.get("workload"),
+        "before_verdict": bv,
+        "after_verdict": av,
+        "before_score": bs,
+        "after_score": as_,
+        "score_delta": score_delta,
+        "improved": improved,
+    }
 
 
 def _delta(before: float | None, after: float | None) -> float | None:

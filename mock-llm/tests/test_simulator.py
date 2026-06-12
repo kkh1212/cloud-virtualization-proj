@@ -86,6 +86,7 @@ async def test_generate_populates_serving_metrics():
     assert result.tpot_s == pytest.approx(0.010)
     assert result.decode_s == pytest.approx(0.030)  # 3 tokens × 10 ms
     assert result.tokens_per_s == pytest.approx(3 / 0.030)
+    assert result.queue_wait_s >= 0.0
 
 
 async def test_concurrency_cap_respected():

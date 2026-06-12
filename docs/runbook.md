@@ -206,7 +206,11 @@ cd /home/azureuser/llm-ops-platform
 export BASE_URL=http://localhost:30080
 
 k6 run loadtests/short_prompt.js          # 기본 baseline (constant-vus 6)
-k6 run loadtests/long_prompt.js           # 긴 프롬프트 + 큰 max_tokens
+k6 run loadtests/long_prompt.js           # legacy: 긴 입력 + 긴 출력 결합
+k6 run loadtests/long_input.js            # 긴 context / prefill / TTFT 확인
+k6 run loadtests/long_output.js           # 긴 생성 / decode / TPOT 확인
+k6 run loadtests/rag_like.js              # 짧은 질문 + 긴 검색 context
+k6 run loadtests/mixed_workload.js        # short/RAG/long-output 혼합
 
 # burst_traffic 은 강도 두 단계 (env 변수로 선택):
 k6 run loadtests/burst_traffic.js                              # normal: spike 80 RPS, maxVUs 1500
@@ -227,11 +231,14 @@ watch -n 2 'kubectl -n llm-ops top pods'
 ### 4. 시나리오별 기대 패턴
 | 시나리오 | 부하 | 기대되는 메트릭 패턴 |
 |----------|------|----------------------|
-| `short_prompt` | 6 VUs × 2분, 짧은 prompt + maxTokens=64 | `requests_running` 약 5~6, `requests_waiting` 0~2, p95 < 2s, errors=0 |
-| `long_prompt`  | 5 VUs × 2분, prompt 2000자 + maxTokens=512 | `requests_running` ≤ 5 (capacity 미만), `requests_waiting` ≈ 0, **p95 latency 만 높음** (~5s) — short_prompt 와 명확히 다른 시그니처 |
+| `short_prompt` | 6 VUs × 2분, 짧은 입력 + 짧은 출력 | `requests_running` 약 5~6, `requests_waiting` 0~2, p95 < 2s, errors=0 |
+| `long_input` | 긴 context + 중간 출력 | `prompt tokens/request p95`, `TTFT p95` 상승. capacity 안이면 queue wait는 낮음 |
+| `long_output` | 중간 입력 + 긴 출력 | `output tokens/request p95`, `TPOT`, output token throughput 확인 |
+| `rag_like` | 짧은 질문 + 긴 검색 context | long_input과 유사한 TTFT 패턴, RAG 서비스형 latency 확인 |
+| `mixed_workload` | short/RAG/long-output 혼합 | 전체 평균보다 tag별 p95/p99와 long-tail 확인 |
 | `burst_traffic`| 10→200 RPS spike, 30s 유지 후 회복 | spike 동안 `requests_waiting` 급증, p95 폭증, `mock_llm_errors_total{reason="queue_timeout"}` 증가. 스파이크 끝나면 0으로 회복 |
 
-이 세 패턴의 **차이** 가 Phase 8 분석기 룰의 입력이 된다 (queue bottleneck vs latency-only vs scale-out lag 구분).
+이 패턴의 **차이** 가 Phase 8 분석기 룰의 입력이 된다 (queue bottleneck vs latency-only vs scale-out lag 구분). 새 시나리오는 token 기준으로 payload를 만들며, k6 tag(`scenario_type`, `prompt_type`, `output_type`)를 붙여 요청 유형별 latency를 분리할 수 있게 한다.
 
 ### 5. k6 출력 읽는 법 (요약)
 실행 끝나면 k6 가 한 페이지짜리 요약을 출력한다. 핵심 지표:
@@ -243,7 +250,7 @@ watch -n 2 'kubectl -n llm-ops top pods'
 | `checks ... pass/fail` | 우리가 정의한 응답 검증 (`status is 200`, `has choices[0].message`) |
 | `iterations` | VU 의 default 함수가 실행된 횟수 |
 
-threshold 가 깨지면 k6 가 **종료 코드 99** 로 종료한다 (`burst_traffic.js` 의 `http_req_failed: ['rate<0.30']` 은 의도적으로 30% 까지 허용).
+threshold 가 깨지면 k6 가 **종료 코드 99** 로 종료한다. `burst_traffic` / `sustained_ramp` 는 병목 관찰이 목적이라 strict threshold를 두지 않는다.
 
 ### 6. 자주 마주치는 문제
 | 증상 | 원인/조치 |
@@ -516,3 +523,17 @@ analyzer/.venv/bin/pytest analyzer/tests -v
 mock-llm/.venv/bin/pytest mock-llm/tests -v
 python3 -m compileall analyzer mock-llm/app
 ```
+
+GPU server quick path:
+
+```bash
+bash scripts/install-gpu-stack.sh --vendor nvidia
+bash scripts/deploy-vllm-gpu.sh --vendor nvidia
+bash scripts/gpu-preflight.sh --vendor nvidia
+
+bash scripts/run-experiment.sh short_prompt --target vllm --gpu-vendor nvidia
+GPU_RUN=$(ls -dt reports/short_prompt-* | head -1)
+analyzer/.venv/bin/python -m analyzer.main --run "$GPU_RUN"
+```
+
+For the full GPU migration sequence, use [gpu-migration.md](gpu-migration.md).

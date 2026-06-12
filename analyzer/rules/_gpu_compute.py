@@ -27,5 +27,5 @@ class GpuCompute(Rule):
                 "gpu_util_min": gpu_util_min,
                 "p95_min_seconds": p95_min,
             },
-            suggestion="GPU 연산 자원 부족. 모델 인스턴스 증설 또는 batching tuning",
+            suggestion="GPU compute appears saturated. Consider batching, max token limits, or a larger GPU.",
         )

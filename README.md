@@ -1686,3 +1686,101 @@ OpenCost 기반 실제 비용 metric 연결
 ```
 
 정리하면 이 프로젝트는 **LLM 서비스를 Kubernetes에서 운영할 때, 현재 인프라와 설정이 사용하려는 워크로드에 맞는지 부하 테스트로 검증하고, 병목과 개선 방향을 리포트로 설명하는 플랫폼**을 목표로 합니다.
+
+### 21.8 현재 구현 우선순위
+
+워크로드별 최종 적합/부적합 판정은 마지막 단계로 미룹니다. 현재는 GPU/vLLM 이전에 가능한 **부하 테스트와 지표 수집 완성**을 우선합니다.
+
+이번 단계에서 적용하는 것:
+
+```text
+long_input / long_output / rag_like 시나리오 추가
+token 기준 요청 생성 helper 추가
+k6 tag(scenario_type, prompt_type, output_type) 추가
+queue wait p95 수집
+prompt/output tokens per request p95 수집
+k6 summary 기반 사용자 관점 latency/error/checks 지표를 report에 표시
+Grafana dashboard에 queue wait, token volume 지표 보강
+```
+
+아직 미루는 것:
+
+```text
+vLLM 실제 배포
+GPU utilization / VRAM / KV cache 실측
+DCGM exporter 또는 nvidia-smi 기반 GPU 지표
+OpenCost 직접 연동
+cold start / model loading time 실측
+워크로드 profile별 최종 적합성 판정
+```
+
+### 21.9 GPU 서버 실행 환경 준비
+
+GPU 서버에서 바로 검증할 수 있도록 다음 실행 환경을 추가했습니다.
+
+```text
+k8s/gpu/vllm-deployment.yaml
+k8s/gpu/vllm-service.yaml
+k8s/gpu/vllm-servicemonitor.yaml
+k8s/gpu/dcgm-exporter-servicemonitor.yaml
+analyzer/config/metrics-vllm.yaml
+scripts/install-gpu-stack.sh
+scripts/deploy-vllm-gpu.sh
+scripts/gpu-preflight.sh
+```
+
+GPU 서버에서는 우선 작은 vLLM 모델로 health/metrics/report 파이프라인을 검증합니다.
+
+```bash
+bash scripts/install-gpu-stack.sh
+bash scripts/deploy-vllm-gpu.sh
+bash scripts/gpu-preflight.sh
+bash scripts/run-experiment.sh short_prompt --target vllm
+analyzer/.venv/bin/python -m analyzer.main --run reports/<scenario-timestamp>
+```
+
+### 21.10 GPU/vLLM vendor execution update
+
+The GPU stage now has explicit NVIDIA and AMD execution paths. The primary
+success path is still NVIDIA, but AMD/ROCm is prepared so the GPU server can be
+checked without changing the experiment pipeline.
+
+```text
+k8s/gpu/nvidia/*
+k8s/gpu/amd/*
+analyzer/config/metrics-vllm-nvidia.yaml
+analyzer/config/metrics-vllm-amd.yaml
+```
+
+NVIDIA run:
+
+```bash
+bash scripts/install-gpu-stack.sh --vendor nvidia
+bash scripts/deploy-vllm-gpu.sh --vendor nvidia
+bash scripts/gpu-preflight.sh --vendor nvidia
+bash scripts/run-experiment.sh short_prompt --target vllm --gpu-vendor nvidia
+analyzer/.venv/bin/python -m analyzer.main --run reports/<scenario-timestamp>
+```
+
+AMD run:
+
+```bash
+bash scripts/install-gpu-stack.sh --vendor amd
+bash scripts/deploy-vllm-gpu.sh --vendor amd
+bash scripts/gpu-preflight.sh --vendor amd
+bash scripts/run-experiment.sh short_prompt --target vllm --gpu-vendor amd
+analyzer/.venv/bin/python -m analyzer.main --run reports/<scenario-timestamp>
+```
+
+For vLLM targets, each report directory also stores cluster and Prometheus
+evidence under `cluster/` and `prometheus/`. This is meant to make the first GPU
+server validation easier to debug: scheduling, model loading, GPU plugin,
+exporter scrape, and analyzer metric mapping can be checked from the saved run
+artifacts.
+
+AMD RX6600 is treated as best-effort. The project can attempt ROCm/vLLM
+validation, but the reliable acceptance path is NVIDIA first.
+
+워크로드별 서비스 예시는 `docs/workload-profiles.md`와
+`analyzer/config/workload-profiles.yaml`에 보존했습니다. 나중에 최종 적합성
+판정을 구현할 때 이 profile들을 기준으로 사용합니다.

@@ -15,7 +15,7 @@
 // Run:
 //   k6 run loadtests/burst_traffic.js
 
-import { buildPayload, chatCompletions, checkOk } from './lib/common.js';
+import { SUMMARY_TREND_STATS, buildPayloadByTokens, chatCompletions, checkOk } from './lib/common.js';
 
 // Two intensity levels:
 //   normal (default) — spike to 80 RPS (~10× capacity at 8 slots).
@@ -33,6 +33,7 @@ const PROFILE = INTENSITY === 'high'
   : { spikeRate: 80,  preAllocatedVUs: 50,  maxVUs: 1500 };
 
 export const options = {
+  summaryTrendStats: SUMMARY_TREND_STATS,
   scenarios: {
     burst: {
       executor: 'ramping-arrival-rate',
@@ -56,7 +57,11 @@ export const options = {
 };
 
 export default function () {
-  const payload = buildPayload({ promptChars: 100, maxTokens: 64 });
-  const res = chatCompletions(payload);
+  const payload = buildPayloadByTokens({ inputTokens: 100, maxTokens: 100 });
+  const res = chatCompletions(payload, {
+    scenario_type: 'burst',
+    prompt_type: 'short',
+    output_type: 'short_output',
+  });
   checkOk(res);
 }

@@ -41,6 +41,7 @@ def main() -> int:
         start = isoparse(run_json["start_iso"])
         end = isoparse(run_json["end_iso"])
         scenario = run_json["scenario"]
+        metrics_config = run_json.get("metrics_config_path")
     else:
         missing = [
             name
@@ -58,10 +59,9 @@ def main() -> int:
         start = isoparse(args.since)
         end = isoparse(args.until)
         scenario = args.scenario
+        metrics_config = args.metrics_config
 
-    metrics_cfg = yaml.safe_load(
-        (BASE_DIR / "config" / "metrics.yaml").read_text(encoding="utf-8")
-    )
+    metrics_cfg = yaml.safe_load(_resolve_metrics_config(metrics_config).read_text(encoding="utf-8"))
     metrics = metrics_cfg.get("metrics", {})
     if not metrics:
         print("metrics.yaml 에 metrics 가 비어있습니다.", file=sys.stderr)
@@ -105,6 +105,7 @@ def main() -> int:
                 "start_iso": start.isoformat(),
                 "end_iso": end.isoformat(),
                 "step": args.step,
+                "metrics_config_path": str(_resolve_metrics_config(metrics_config)),
                 "captured_metrics": sorted(metrics.keys()),
                 "failed_metrics": failures,
             },
@@ -138,9 +139,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", help="direct mode scenario label")
     parser.add_argument("--step", default="15s")
     parser.add_argument(
+        "--metrics-config",
+        help="Metric config file path or analyzer/config file name. Default: metrics.yaml.",
+    )
+    parser.add_argument(
         "--output", required=True, help="analyzer/tests/fixtures/<name>"
     )
     return parser.parse_args()
+
+
+def _resolve_metrics_config(value: str | None) -> Path:
+    if not value:
+        return BASE_DIR / "config" / "metrics.yaml"
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    config_path = BASE_DIR / "config" / value
+    if config_path.exists():
+        return config_path
+    return path
 
 
 if __name__ == "__main__":

@@ -1,0 +1,30 @@
+# Metric profile for a GPU/vLLM backend on AMD ROCm GPUs.
+#
+# This file keeps analyzer logical metric names vendor-neutral while mapping
+# GPU metrics to AMD Device Metrics Exporter.
+metrics:
+  requests_total:    { promql: 'sum(rate(vllm:request_success_total[1m]))' }
+  requests_running:  { promql: 'sum(vllm:num_requests_running)' }
+  requests_waiting:  { promql: 'sum(vllm:num_requests_waiting)' }
+  avg_latency:       { promql: 'sum(rate(vllm:e2e_request_latency_seconds_sum[1m])) / sum(rate(vllm:e2e_request_latency_seconds_count[1m]))' }
+  p95_latency:       { promql: 'histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket[1m])) by (le))' }
+  p99_latency:       { promql: 'histogram_quantile(0.99, sum(rate(vllm:e2e_request_latency_seconds_bucket[1m])) by (le))' }
+  error_rate:        { promql: 'sum(rate(vllm:request_failure_total[1m])) or vector(0)' }
+  prompt_token_rate: { promql: 'sum(rate(vllm:prompt_tokens_total[1m]))' }
+  output_token_rate: { promql: 'sum(rate(vllm:generation_tokens_total[1m]))' }
+  ttft_p95:          { promql: 'histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket[1m])) by (le))' }
+  tpot_p95:          { promql: 'histogram_quantile(0.95, sum(rate(vllm:inter_token_latency_seconds_bucket[1m])) by (le)) or histogram_quantile(0.95, sum(rate(vllm:time_per_output_token_seconds_bucket[1m])) by (le))' }  # V1: inter_token_latency_seconds; V0 fallback: time_per_output_token_seconds
+  queue_wait_p95:    { promql: 'histogram_quantile(0.95, sum(rate(vllm:request_queue_time_seconds_bucket[1m])) by (le))' }
+  prompt_tokens_p95: { promql: 'histogram_quantile(0.95, sum(rate(vllm:request_prompt_tokens_bucket[1m])) by (le))' }
+  output_tokens_p95: { promql: 'histogram_quantile(0.95, sum(rate(vllm:request_generation_tokens_bucket[1m])) by (le))' }
+  batch_size_max:    { promql: 'max(vllm:num_requests_running)' }
+  kv_cache_ratio:    { promql: 'avg(vllm:kv_cache_usage_perc) or avg(vllm:gpu_cache_usage_perc)' }  # V1: kv_cache_usage_perc; V0 fallback: gpu_cache_usage_perc
+
+  cpu_usage_ratio:   { promql: 'sum(rate(container_cpu_usage_seconds_total{namespace="llm-ops",pod=~"vllm-.*",container="vllm"}[1m])) / sum(kube_pod_container_resource_requests{namespace="llm-ops",pod=~"vllm-.*",container="vllm",resource="cpu"})' }
+  memory_bytes:      { promql: 'sum(container_memory_working_set_bytes{namespace="llm-ops",pod=~"vllm-.*",container="vllm"})' }
+  replicas_desired:  { promql: 'kube_deployment_spec_replicas{namespace="llm-ops",deployment="vllm"}' }
+  replicas_ready:    { promql: 'kube_deployment_status_replicas_ready{namespace="llm-ops",deployment="vllm"}' }
+  pod_pending_count: { promql: 'sum(kube_pod_status_phase{namespace="llm-ops",pod=~"vllm-.*",phase="Pending"})' }
+
+  gpu_utilization:       { promql: 'avg(GPU_GFX_ACTIVITY) / 100' }
+  gpu_memory_used_ratio: { promql: 'sum(GPU_USED_VRAM) / sum(GPU_TOTAL_VRAM)' }

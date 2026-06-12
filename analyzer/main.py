@@ -25,6 +25,12 @@ from analyzer.slo import (
     load_slo_config,
     slo_breach_result,
 )
+from analyzer.workload import (
+    WorkloadConfigError,
+    build_workload_fit,
+    load_workload_config,
+    workload_slo_profile,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -33,7 +39,11 @@ def main() -> int:
     args = _parse_args()
     run_context = _resolve_run_context(args)
 
-    metrics_cfg = _load_yaml(BASE_DIR / "config" / "metrics.yaml")
+    metrics_cfg = _load_yaml(
+        _resolve_metrics_config(
+            args.metrics_config or run_context.get("metrics_config_path")
+        )
+    )
     rules_cfg = _load_yaml(BASE_DIR / "config" / "rules.yaml")
 
     client = PrometheusClient(run_context["prometheus_url"], strict=args.strict)
@@ -73,12 +83,32 @@ def main() -> int:
             print(f"[cost] {exc}", file=sys.stderr)
             return 2
 
+    # Workload-fit judgment (optional). Drives suitability verdict + SLO auto-select
+    # + workload-aware recommendations. Absent metrics (e.g. GPU on mock) are skipped.
+    workload_name = args.workload or run_context.get("workload")
+    workload_fit = None
+    workload_cfg = None
+    if workload_name:
+        try:
+            workload_cfg = load_workload_config(
+                BASE_DIR / "config" / "workload-profiles.yaml"
+            )
+            workload_fit = build_workload_fit(snapshot, workload_name, workload_cfg)
+        except WorkloadConfigError as exc:
+            print(f"[workload] {exc}", file=sys.stderr)
+            return 2
+
+    # Explicit --slo-profile wins; otherwise fall back to the workload's slo_profile.
+    slo_profile_name = args.slo_profile
+    if not slo_profile_name and workload_cfg is not None:
+        slo_profile_name = workload_slo_profile(workload_name, workload_cfg)
+
     slo_evaluation = None
-    if args.slo_profile:
+    if slo_profile_name:
         try:
             slo_evaluation = build_slo_evaluation(
                 snapshot,
-                args.slo_profile,
+                slo_profile_name,
                 load_slo_config(BASE_DIR / "config" / "slo.yaml"),
             )
         except SLOConfigError as exc:
@@ -95,6 +125,7 @@ def main() -> int:
             diagnosis,
             slo_evaluation,
             load_recommend_config(BASE_DIR / "config" / "recommend.yaml"),
+            workload_fit=workload_fit,
         )
     except (RecommendConfigError, OSError) as exc:
         # Recommendations are advisory; never block the report on a config issue.
@@ -104,8 +135,10 @@ def main() -> int:
         run_context["scenario"],
         snapshot,
         diagnosis,
+        k6=_load_k6_summary(run_context),
         cost=cost_estimate,
         slo=slo_evaluation,
+        workload_fit=workload_fit,
         recommendations=recommendations,
     )
     output_dir = run_context["output_dir"]
@@ -129,9 +162,23 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--until", help="End time ISO-8601 for direct mode")
     parser.add_argument("--prometheus-url", help="Prometheus base URL for direct mode")
     parser.add_argument("--output", help="Output directory for direct mode")
+    parser.add_argument(
+        "--metrics-config",
+        help=(
+            "Metric config file path or analyzer/config file name. "
+            "Default: metrics.yaml; vLLM runs usually use metrics-vllm.yaml."
+        ),
+    )
     parser.add_argument("--step", default="15s", help="Prometheus query_range step")
     parser.add_argument("--cost-profile", help="Name under analyzer/config/cost.yaml profiles")
     parser.add_argument("--slo-profile", help="Name under analyzer/config/slo.yaml profiles")
+    parser.add_argument(
+        "--workload",
+        help=(
+            "Name under analyzer/config/workload-profiles.yaml. 워크로드 적합성 판정 + "
+            "SLO 자동선택 + 워크로드 인식 추천을 활성화."
+        ),
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -150,6 +197,10 @@ def _resolve_run_context(args: argparse.Namespace) -> dict[str, Any]:
             "end": isoparse(run_json["end_iso"]),
             "prometheus_url": run_json.get("prometheus_url", "http://localhost:9090"),
             "output_dir": run_dir,
+            "run_dir": run_dir,
+            "k6_summary_path": run_json.get("k6_summary_path"),
+            "metrics_config_path": run_json.get("metrics_config_path"),
+            "workload": run_json.get("workload"),
         }
 
     missing = [
@@ -169,6 +220,10 @@ def _resolve_run_context(args: argparse.Namespace) -> dict[str, Any]:
         "end": isoparse(args.until),
         "prometheus_url": args.prometheus_url,
         "output_dir": Path(args.output),
+        "run_dir": None,
+        "k6_summary_path": None,
+        "metrics_config_path": args.metrics_config,
+        "workload": args.workload,
     }
 
 
@@ -176,12 +231,28 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _resolve_metrics_config(value: str | None) -> Path:
+    if not value:
+        return BASE_DIR / "config" / "metrics.yaml"
+
+    path = Path(value)
+    if path.is_absolute():
+        return path
+
+    config_path = BASE_DIR / "config" / value
+    if config_path.exists():
+        return config_path
+    return path
+
+
 def _build_report(
     scenario: str,
     snapshot: MetricSnapshot,
     diagnosis,
+    k6: dict[str, Any] | None = None,
     cost: dict[str, Any] | None = None,
     slo: dict[str, Any] | None = None,
+    workload_fit: dict[str, Any] | None = None,
     recommendations: list[dict[str, Any]] | None = None,
 ) -> Report:
     start, end = snapshot.time_range
@@ -197,6 +268,9 @@ def _build_report(
     output_tokens = _series(snapshot, "output_token_rate")
     ttft = _series(snapshot, "ttft_p95")
     tpot = _series(snapshot, "tpot_p95")
+    queue_wait = _series(snapshot, "queue_wait_p95")
+    prompt_tokens_p95 = _series(snapshot, "prompt_tokens_p95")
+    output_tokens_p95 = _series(snapshot, "output_tokens_p95")
     batch_size = _series(snapshot, "batch_size_max")
     kv_cache = _series(snapshot, "kv_cache_ratio")
     desired = _series(snapshot, "replicas_desired")
@@ -204,6 +278,8 @@ def _build_report(
     pending = _series(snapshot, "pod_pending_count")
     cpu = _series(snapshot, "cpu_usage_ratio")
     memory = _series(snapshot, "memory_bytes")
+    gpu_utilization = _series(snapshot, "gpu_utilization")
+    gpu_memory = _series(snapshot, "gpu_memory_used_ratio")
 
     triggered_suggestions = []
     seen = set()
@@ -240,6 +316,15 @@ def _build_report(
             "output_token_rate_avg": _none_if_empty(output_tokens, output_tokens.mean()),
             "ttft_p95_peak_seconds": _none_if_empty(ttft, ttft.max()),
             "tpot_p95_peak_seconds": _none_if_empty(tpot, tpot.max()),
+            "queue_wait_p95_peak_seconds": _none_if_empty(queue_wait, queue_wait.max()),
+            "prompt_tokens_per_request_p95": _none_if_empty(
+                prompt_tokens_p95,
+                prompt_tokens_p95.max(),
+            ),
+            "output_tokens_per_request_p95": _none_if_empty(
+                output_tokens_p95,
+                output_tokens_p95.max(),
+            ),
             "max_batch_size": _none_if_empty(batch_size, batch_size.max()),
             "kv_cache_ratio_avg": _none_if_empty(kv_cache, kv_cache.mean()),
         },
@@ -257,10 +342,32 @@ def _build_report(
             "cpu_usage_ratio_peak": _none_if_empty(cpu, cpu.max()),
             "memory_bytes_avg": _none_if_empty(memory, memory.mean()),
             "memory_bytes_peak": _none_if_empty(memory, memory.max()),
-            "gpu": "현재 미수집",
+            "gpu_utilization_avg": _none_if_empty(
+                gpu_utilization,
+                gpu_utilization.mean(),
+            ),
+            "gpu_utilization_peak": _none_if_empty(
+                gpu_utilization,
+                gpu_utilization.max(),
+            ),
+            "gpu_memory_used_ratio_avg": _none_if_empty(
+                gpu_memory,
+                gpu_memory.mean(),
+            ),
+            "gpu_memory_used_ratio_peak": _none_if_empty(
+                gpu_memory,
+                gpu_memory.max(),
+            ),
+            "gpu": (
+                "collected"
+                if gpu_utilization.length() or gpu_memory.length()
+                else "현재 미수집"
+            ),
         },
+        k6=k6,
         cost=cost,
         slo=slo,
+        workload_fit=workload_fit,
         recommendations=recommendations or [],
         diagnosis=diagnosis,
         improvements=triggered_suggestions,
@@ -275,6 +382,104 @@ def _none_if_empty(series: TimeSeries, value):
     if series.length() == 0:
         return None
     return value
+
+
+def _load_k6_summary(run_context: dict[str, Any]) -> dict[str, Any] | None:
+    run_dir = run_context.get("run_dir")
+    summary_path = run_context.get("k6_summary_path")
+    if not run_dir or not summary_path:
+        return None
+    path = Path(run_dir) / str(summary_path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return _summarize_k6(payload)
+
+
+def _summarize_k6(payload: dict[str, Any]) -> dict[str, Any]:
+    metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
+    duration = _metric_values(metrics, "http_req_duration")
+    failed = _metric_values(metrics, "http_req_failed")
+    checks = _metric_values(metrics, "checks")
+    http_reqs = _metric_values(metrics, "http_reqs")
+    vus = _metric_values(metrics, "vus")
+    vus_max = _metric_values(metrics, "vus_max")
+    vus_peak = _max_value(
+        _value(vus, "max"),
+        _value(vus, "value"),
+        _value(vus_max, "max"),
+        _value(vus_max, "value"),
+    )
+    return {
+        "http_req_duration_p50_ms": _value(duration, "med"),
+        "http_req_duration_p95_ms": _value(duration, "p(95)"),
+        "http_req_duration_p99_ms": _value(duration, "p(99)"),
+        "http_req_failed_rate": _value(failed, "rate"),
+        "checks_success_rate": _value(checks, "rate"),
+        "request_count": _value(http_reqs, "count"),
+        "vus_peak": vus_peak,
+        "tagged_latency_p95_ms": _tagged_latency_p95(metrics),
+    }
+
+
+def _metric_values(metrics: dict[str, Any], name: str) -> dict[str, Any]:
+    metric = metrics.get(name, {})
+    values = metric.get("values", {}) if isinstance(metric, dict) else {}
+    return values if isinstance(values, dict) else {}
+
+
+def _value(values: dict[str, Any], key: str) -> float | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _max_value(*values: float | None) -> float | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _tagged_latency_p95(metrics: dict[str, Any]) -> dict[str, float]:
+    tagged: dict[str, float] = {}
+    prefix = "http_req_duration{"
+    for name, metric in metrics.items():
+        if not isinstance(name, str) or not name.startswith(prefix):
+            continue
+        values = metric.get("values", {}) if isinstance(metric, dict) else {}
+        p95 = _value(values, "p(95)") if isinstance(values, dict) else None
+        if p95 is None:
+            continue
+        tags = _parse_k6_tags(name)
+        label_parts = [
+            tags.get("scenario_type"),
+            tags.get("prompt_type"),
+            tags.get("output_type"),
+        ]
+        label = "/".join(part for part in label_parts if part)
+        if label:
+            tagged[label] = p95
+    return tagged
+
+
+def _parse_k6_tags(metric_name: str) -> dict[str, str]:
+    start = metric_name.find("{")
+    end = metric_name.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    tags = {}
+    for item in metric_name[start + 1 : end].split(","):
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        tags[key.strip()] = value.strip()
+    return tags
 
 
 if __name__ == "__main__":

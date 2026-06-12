@@ -1,0 +1,3 @@
+# Output directory for analyzer/provision.py (Pipeline B initial-config generator).
+# Generated manifests land in k8s/generated/<workload>/ and are git-ignored except
+# this placeholder, so generated artifacts are not committed by default.

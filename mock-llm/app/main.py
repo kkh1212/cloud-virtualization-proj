@@ -24,7 +24,10 @@ from app.metrics import (
     INTER_TOKEN_LATENCY_SECONDS,
     KV_CACHE_USAGE_RATIO,
     OUTPUT_TOKENS_TOTAL,
+    OUTPUT_TOKENS_PER_REQUEST,
     PROMPT_TOKENS_TOTAL,
+    PROMPT_TOKENS_PER_REQUEST,
+    QUEUE_WAIT_SECONDS,
     REQUEST_DURATION_SECONDS,
     REQUESTS_RUNNING,
     REQUESTS_TOTAL,
@@ -107,6 +110,9 @@ async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse
 
     PROMPT_TOKENS_TOTAL.inc(result.prompt_tokens)
     OUTPUT_TOKENS_TOTAL.inc(result.output_tokens)
+    PROMPT_TOKENS_PER_REQUEST.observe(result.prompt_tokens)
+    OUTPUT_TOKENS_PER_REQUEST.observe(result.output_tokens)
+    QUEUE_WAIT_SECONDS.observe(result.queue_wait_s)
     TIME_TO_FIRST_TOKEN_SECONDS.observe(result.ttft_s)
     INTER_TOKEN_LATENCY_SECONDS.observe(result.tpot_s)
 

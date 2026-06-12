@@ -21,13 +21,14 @@
 //   k6 run loadtests/sustained_ramp.js
 //   RAMP_PEAK_RATE=60 k6 run loadtests/sustained_ramp.js
 
-import { buildPayload, chatCompletions, checkOk } from './lib/common.js';
+import { SUMMARY_TREND_STATS, buildPayloadByTokens, chatCompletions, checkOk } from './lib/common.js';
 
 const PEAK = Number(__ENV.RAMP_PEAK_RATE || '40');
 const CLIMB = __ENV.RAMP_CLIMB || '5m';
 const HOLD = __ENV.RAMP_HOLD || '3m';
 
 export const options = {
+  summaryTrendStats: SUMMARY_TREND_STATS,
   scenarios: {
     sustained_ramp: {
       executor: 'ramping-arrival-rate',
@@ -49,7 +50,11 @@ export const options = {
 };
 
 export default function () {
-  const payload = buildPayload({ promptChars: 100, maxTokens: 64 });
-  const res = chatCompletions(payload);
+  const payload = buildPayloadByTokens({ inputTokens: 100, maxTokens: 100 });
+  const res = chatCompletions(payload, {
+    scenario_type: 'sustained_ramp',
+    prompt_type: 'short',
+    output_type: 'short_output',
+  });
   checkOk(res);
 }

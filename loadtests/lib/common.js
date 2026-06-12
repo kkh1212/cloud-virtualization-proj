@@ -12,6 +12,8 @@ import { check, sleep } from 'k6';
 
 export const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 export const HEADERS = { 'Content-Type': 'application/json' };
+export const SUMMARY_TREND_STATS = ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'];
+export const MODEL = __ENV.MODEL || 'mock';
 
 // Repeats "token " (6 chars incl. trailing space) until length ≈ approxChars.
 export function buildPrompt(approxChars) {
@@ -20,16 +22,51 @@ export function buildPrompt(approxChars) {
   return word.repeat(n).trim();
 }
 
+export function buildPromptByTokens(tokenCount, prefix = 'token') {
+  const n = Math.max(1, Math.floor(tokenCount));
+  return Array.from({ length: n }, (_, i) => `${prefix}${i % 97}`).join(' ');
+}
+
 export function buildPayload({ promptChars = 50, maxTokens = 64, role = 'user' } = {}) {
   return JSON.stringify({
-    model: 'mock',
+    model: MODEL,
     messages: [{ role, content: buildPrompt(promptChars) }],
     max_tokens: maxTokens,
   });
 }
 
-export function chatCompletions(payload) {
-  return http.post(`${BASE_URL}/v1/chat/completions`, payload, { headers: HEADERS });
+export function buildPayloadByTokens({
+  inputTokens = 100,
+  maxTokens = 100,
+  role = 'user',
+  promptPrefix = 'token',
+  content,
+} = {}) {
+  return JSON.stringify({
+    model: MODEL,
+    messages: [{ role, content: content || buildPromptByTokens(inputTokens, promptPrefix) }],
+    max_tokens: maxTokens,
+  });
+}
+
+export function buildRagPayload({
+  questionTokens = 50,
+  contextTokens = 4000,
+  maxTokens = 500,
+} = {}) {
+  const question = buildPromptByTokens(questionTokens, 'question');
+  const context = buildPromptByTokens(contextTokens, 'context');
+  return buildPayloadByTokens({
+    maxTokens,
+    content: `question:\n${question}\n\nretrieved_context:\n${context}`,
+  });
+}
+
+export function chatCompletions(payload, tags = {}) {
+  return http.post(`${BASE_URL}/v1/chat/completions`, payload, {
+    headers: HEADERS,
+    tags,
+  });
 }
 
 // Exponential (Poisson-process) inter-arrival sleep; mean is in seconds.

@@ -10,14 +10,15 @@
 //   BASE_URL=http://otherhost:8000 k6 run loadtests/short_prompt.js
 
 import { sleep } from 'k6';
-import { buildPayload, chatCompletions, checkOk } from './lib/common.js';
+import { SUMMARY_TREND_STATS, buildPayloadByTokens, chatCompletions, checkOk } from './lib/common.js';
 
 export const options = {
+  summaryTrendStats: SUMMARY_TREND_STATS,
   scenarios: {
     short_prompt: {
       executor: 'constant-vus',
-      vus: 6,
-      duration: '2m',
+      vus: Number(__ENV.SHORT_VUS || '6'),
+      duration: __ENV.SHORT_DURATION || '2m',
     },
   },
   thresholds: {
@@ -27,8 +28,12 @@ export const options = {
 };
 
 export default function () {
-  const payload = buildPayload({ promptChars: 50, maxTokens: 64 });
-  const res = chatCompletions(payload);
+  const payload = buildPayloadByTokens({ inputTokens: 100, maxTokens: 100 });
+  const res = chatCompletions(payload, {
+    scenario_type: 'short_prompt',
+    prompt_type: 'short',
+    output_type: 'short_output',
+  });
   checkOk(res);
   // Small think-time so VUs aren't pure tight loops; keeps RPS in a realistic band.
   sleep(0.2);

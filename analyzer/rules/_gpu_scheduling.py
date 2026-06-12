@@ -41,7 +41,7 @@ class GpuScheduling(Rule):
                 "pod_pending_min": pending_min,
                 "duration_min_seconds": duration_min,
             },
-            suggestion="GPU 자원 부족으로 Pod scheduling 실패. node taint/affinity 또는 GPU MIG 분할 검토",
+            suggestion="GPU scheduling is blocked. Check allocatable GPU resources, node taints, affinity, and device plugin health.",
         )
 
 
