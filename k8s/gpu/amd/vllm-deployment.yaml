@@ -9,6 +9,8 @@ metadata:
     app.kubernetes.io/part-of: llm-ops-platform
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: vllm
@@ -24,6 +26,8 @@ spec:
         prometheus.io/path: /metrics
         prometheus.io/port: "8000"
     spec:
+      runtimeClassName: amd
+      enableServiceLinks: false
       tolerations:
         - key: amd.com/gpu
           operator: Exists
@@ -76,6 +80,8 @@ spec:
               value: /models
             - name: VLLM_NO_USAGE_STATS
               value: "1"
+            - name: VLLM_PORT
+              value: "29500"
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:

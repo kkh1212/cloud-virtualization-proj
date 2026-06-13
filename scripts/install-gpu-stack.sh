@@ -85,6 +85,16 @@ install_nvidia_stack() {
   if [[ "$SKIP_DEVICE_PLUGIN" -eq 0 ]]; then
     info "Installing NVIDIA device plugin ${device_plugin_version}"
     kubectl apply -f "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/${device_plugin_version}/deployments/static/nvidia-device-plugin.yml"
+    info "Patching NVIDIA device plugin for k3s NVIDIA runtime"
+    if kubectl -n kube-system get daemonset/nvidia-device-plugin-daemonset >/dev/null 2>&1; then
+      kubectl -n kube-system patch daemonset/nvidia-device-plugin-daemonset --type='merge' \
+        -p '{"spec":{"template":{"spec":{"runtimeClassName":"nvidia"}}}}' || \
+        warn "Could not patch NVIDIA device plugin runtimeClassName=nvidia"
+      kubectl -n kube-system set env daemonset/nvidia-device-plugin-daemonset \
+        NVIDIA_VISIBLE_DEVICES=all \
+        NVIDIA_DRIVER_CAPABILITIES=compute,utility || \
+        warn "Could not patch NVIDIA device plugin environment"
+    fi
     if kubectl -n kube-system get daemonset/nvidia-device-plugin-daemonset >/dev/null 2>&1; then
       kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset --timeout=180s || \
         warn "NVIDIA device plugin rollout did not finish within 180s; inspect kube-system Pods."
@@ -101,6 +111,18 @@ install_nvidia_stack() {
       --namespace "$dcgm_namespace" \
       --create-namespace \
       --set serviceMonitor.enabled=false
+    info "Patching DCGM exporter for k3s NVIDIA runtime"
+    if kubectl -n "$dcgm_namespace" get daemonset/dcgm-exporter >/dev/null 2>&1; then
+      kubectl -n "$dcgm_namespace" patch daemonset/dcgm-exporter --type='merge' \
+        -p '{"spec":{"template":{"spec":{"runtimeClassName":"nvidia"}}}}' || \
+        warn "Could not patch DCGM exporter runtimeClassName=nvidia"
+      kubectl -n "$dcgm_namespace" set env daemonset/dcgm-exporter \
+        NVIDIA_VISIBLE_DEVICES=all \
+        NVIDIA_DRIVER_CAPABILITIES=compute,utility || \
+        warn "Could not patch DCGM exporter environment"
+      kubectl -n "$dcgm_namespace" rollout status daemonset/dcgm-exporter --timeout=180s || \
+        warn "DCGM exporter rollout did not finish within 180s; inspect ${dcgm_namespace} Pods."
+    fi
 
     if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
       info "Applying DCGM exporter ServiceMonitor"

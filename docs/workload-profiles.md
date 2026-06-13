@@ -77,7 +77,46 @@ json_extraction: 100 RPS부터 p99·queue 급등
   → replica 상향 / KEDA queue → 더 높은 RPS까지 p99 안정 기대
 ```
 
-## 5. Quality metrics (deferred to real models)
+## 5. Pipeline B: workload -> deployable vLLM environment
+
+Pipeline B starts from a service workload and generates Kubernetes manifests for
+a fresh vLLM deployment before running the same workload ladder.
+
+```bash
+bash scripts/run-pipeline-b.sh support_chat \
+  --level standard \
+  --gpu-vendor nvidia \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --served-model-name mock
+```
+
+`analyzer.provision` creates two profiles by default:
+
+| Profile | Purpose |
+|---|---|
+| `run` | Single-GPU executable profile. It uses one replica and disables autoscaling so it works on a one-GPU VM. |
+| `recommended` | Workload `initial_config` profile. It keeps the recommended replica/autoscaler settings for review or larger clusters. |
+
+Generated manifests are written under `k8s/generated/<workload>/run` and
+`k8s/generated/<workload>/recommended`. `run-pipeline-b.sh` applies only the
+`run` profile automatically, then launches `run-workload.sh`.
+
+## 6. Session-level before/after comparison
+
+After applying a recommendation and re-running the same ladder, compare the two
+session directories:
+
+```bash
+analyzer/.venv/bin/python -m analyzer.session_compare \
+  --before reports/session-support_chat-standard-<before-ts> \
+  --after reports/session-support_chat-standard-<after-ts> \
+  --output reports/session-compare-support_chat
+```
+
+This writes `session-comparison.md/json` and focuses on `safe`, `knee`,
+`break`, limiting bottleneck, and phase-level p95/TTFT deltas.
+
+## 7. Quality metrics (deferred to real models)
 
 Content-quality checks (JSON valid rate, groundedness, syntax/compile, classification
 accuracy) require a real model's output and are meaningless against the mock

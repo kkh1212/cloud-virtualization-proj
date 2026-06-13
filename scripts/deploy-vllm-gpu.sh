@@ -112,7 +112,12 @@ kubectl -n llm-ops set env deployment/vllm \
   "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}" \
   "MAX_MODEL_LEN=${MAX_MODEL_LEN}" \
   "GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION}" \
-  "DTYPE=${DTYPE}"
+  "DTYPE=${DTYPE}" \
+  "VLLM_PORT=29500"
+
+info "Ensuring single-GPU runtime-safe pod settings"
+kubectl -n llm-ops patch deployment/vllm --type='merge' \
+  -p "{\"spec\":{\"strategy\":{\"type\":\"Recreate\",\"rollingUpdate\":null},\"template\":{\"spec\":{\"runtimeClassName\":\"${VENDOR}\",\"enableServiceLinks\":false}}}}"
 
 if [[ "$SKIP_WAIT" -eq 0 ]]; then
   info "Waiting for vLLM rollout (timeout=${ROLLOUT_TIMEOUT})"
