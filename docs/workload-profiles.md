@@ -1,34 +1,85 @@
-# Workload Profiles for Later Suitability Evaluation
+# Workload Profiles & Capacity Ladder
 
-This document preserves the service examples that will later become workload
-suitability rules. It is not an analyzer feature yet.
+This tool is not a generic "send many requests" load tester. It evaluates whether
+the current LLM serving config (replicas, max concurrency, autoscaler, GPU memory)
+fits the **workload** a service actually runs. Workloads are defined in
+`analyzer/config/workload-profiles.yaml` and consumed by `analyzer/workload.py`
+(fit judgment) and `scripts/run-workload.sh` (the staged load test).
 
-The current implementation goal is still:
+## 1. The four workloads
 
-```text
-load test scenarios -> Prometheus metrics -> analyzer report
-```
+Each workload maps to a real service category **and** isolates a distinct serving
+bottleneck, so the load test and the recommendation are meaningful.
 
-Suitability scoring comes after the CPU/KEDA pipeline and GPU/vLLM validation
-are stable.
-
-| Profile | Service example | Request shape | Main scenarios | Metrics to watch |
+| Workload | Real service example | Request shape | Dominant bottleneck (test target) | Key metrics |
 |---|---|---|---|---|
-| `faq_chatbot` | General chatbot / FAQ | short input, short output | `short_prompt`, `mixed_workload` | TTFT, p95 latency, waiting requests |
-| `customer_support` | Customer support assistant | short question + policy/order context | `rag_like`, `mixed_workload` | TTFT, queue wait, prompt tokens/request |
-| `rag_internal_qa` | Internal document QA | short question + long retrieved context | `rag_like`, `long_input` | TTFT, prompt tokens/request, p99 latency |
-| `document_summary` | Meeting note or document summary | long input, short/medium output | `long_input` | TTFT, prefill pressure, memory/GPU memory |
-| `long_generation` | Report or marketing text generation | short/medium input, long output | `long_output` | TPOT, output tokens/request, output token rate |
-| `coding_assistant` | Code/log analysis assistant | medium/long input, medium/long output | `long_input`, `long_output`, `mixed_workload` | TTFT, TPOT, p99 latency |
-| `recommendation_explanation` | Recommendation explanation | structured short/medium context, medium output | `short_prompt`, `mixed_workload` | p95 latency, output token rate |
-| `tool_agent` | Tool-calling agent | multiple LLM calls per user request | `mixed_workload`, `burst_traffic`, `sustained_ramp` | p99 latency, queue wait, scale-out lag |
+| `support_chat` | Customer-support RAG chatbot (Intercom Fin, Zendesk AI) | short question + medium RAG context → short/medium output, interactive | **TTFT + queue** under concurrency | `ttft_p95`, `queue_wait_p95`, `p95_latency`, `requests_waiting` |
+| `doc_summary` | Doc / meeting / channel summary (Slack AI, Notion AI, M365 Copilot) | long input → medium output | **prefill + GPU memory / KV cache** as input grows | `ttft_p95`, `prompt_tokens_p95`, `gpu_memory_used_ratio`, `kv_cache_ratio` |
+| `code_assistant` | Coding assistant (Copilot, Cursor) | medium/long code → code output | **prefill+decode mix** (TPOT / tail latency) | `tpot_p95`, `ttft_p95`, `p99_latency`, `output_token_rate` |
+| `json_extraction` | Extraction / classification / routing (CRM & email automation) | short input → tiny JSON output, high RPS | **throughput / queue** (p99 stability) | `p99_latency`, `queue_wait_p95`, `requests_waiting` |
 
-Future report target:
+These four cover the three serving regimes (prefill / decode / queue-throughput)
+plus the interactive case. GPU thresholds (`gpu_memory_used_ratio`,
+`gpu_utilization`, `kv_cache_ratio`) are skipped on the mock pipeline and activate
+automatically when a vLLM/DCGM run supplies them — same gating as the rule engine.
+
+> Cost analysis is intentionally excluded for now. `--cost-profile` is opt-in and
+> the session pipeline never passes it, so reports carry no cost section.
+
+## 2. Load is staged into a capacity ladder (not one big burst)
+
+A single fixed burst only answers "did it break this once?" Real capacity planning
+needs "how many users until it breaks, and why?" So each workload's `test_plan`
+defines a **monotonic load ladder** (`stress`), sized to the workload's weight:
+
+- `support_chat` ramps concurrency (RAG_VUS 8 → 16 → 32 → 64)
+- `doc_summary` ramps input length (4k → 8k → 16k → 32k tokens)
+- `code_assistant` ramps concurrency (VUs 2 → 5 → 10 → 20)
+- `json_extraction` ramps arrival rate (50 → 100 → 200 → 300 RPS)
+
+Each rung runs as its own analyzable phase. A common LLM baseline runs first so a
+workload is never judged in isolation. `test_plan.load_unit` (`vus | input_tokens |
+rps`) labels the rung load. Levels: `quick` (baselines only), `standard` (full
+ladder = the capacity test), `full` (+ operational burst/ramp/mixed).
+
+## 3. What the report tells you — the capacity knee
+
+`analyzer/session.py` walks the ladder rungs in increasing-load order and reports:
 
 ```text
-current config: suitable / partially suitable / unsuitable
-evidence: metrics that crossed profile-specific thresholds
-bottleneck: queue, TTFT/prefill, TPOT/decode, GPU memory, GPU compute, scale-out lag
-recommendation: config or infrastructure direction
-tradeoff: performance gain vs cost
+안전 용량(safe)   : 마지막으로 SLO를 통과한 부하
+한계 시작(knee)   : 처음으로 SLO가 저하된 부하 (partially_suitable)
+붕괴(break)       : 부적합(unsuitable)이 된 부하
+한계 병목          : knee에서 지배적인 병목 카테고리 (queue / prefill / decode / gpu_memory ...)
 ```
+
+i.e. "이만큼 몰리면 안전, 이만큼부터 위험, 이만큼에서 붕괴, 원인은 ○○."
+
+## 4. Closed loop: fix → re-test → compare
+
+1. Run the ladder: `bash scripts/run-workload.sh <workload> --level standard`
+2. Read `reports/session-<workload>-<level>-<ts>/session-report.md` → safe/knee/break + limiting bottleneck.
+3. Apply the workload's `recommendations` playbook for that bottleneck (each phase
+   `report.md` "권장 설정" also lists computed config changes).
+4. Re-run the **same ladder** → the knee should move to a higher load, or the
+   limiting bottleneck should change. `analyzer/compare` diffs two runs.
+
+Example reads:
+
+```text
+support_chat: queue_wait·TTFT가 동시성 40부터 급등하는데 GPU util은 낮음
+  → KEDA queue autoscaling / minReplicas 상향 → 재실행 시 knee가 64+로 이동 기대
+
+doc_summary: 입력 16k에서 gpu_memory_used_ratio 0.9 초과 / OOM
+  → max_model_len 조정 또는 더 큰 VRAM / concurrency 하향 → 같은 입력서 OOM 소멸 기대
+
+json_extraction: 100 RPS부터 p99·queue 급등
+  → replica 상향 / KEDA queue → 더 높은 RPS까지 p99 안정 기대
+```
+
+## 5. Quality metrics (deferred to real models)
+
+Content-quality checks (JSON valid rate, groundedness, syntax/compile, classification
+accuracy) require a real model's output and are meaningless against the mock
+(`"mock mock ..."`). They belong to the vLLM stage. The infra/serving metrics above
+are sufficient to locate the capacity knee and its cause now.

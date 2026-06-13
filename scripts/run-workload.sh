@@ -7,8 +7,8 @@
 # (full) operational tests. Each phase is an ordinary analyzable run dir; the
 # session groups them under reports/session-<workload>-<level>-<ts>/.
 #
-#   bash scripts/run-workload.sh rag_internal_qa --level standard --target vllm --gpu-vendor nvidia --model mock
-#   bash scripts/run-workload.sh faq_chatbot --level quick      # mock pipeline
+#   bash scripts/run-workload.sh doc_summary --level standard --target vllm --gpu-vendor nvidia --model mock
+#   bash scripts/run-workload.sh support_chat --level quick      # mock pipeline
 #
 # Levels: quick (baseline only) / standard (+ stress) / full (+ operational).
 set -uo pipefail
@@ -67,6 +67,7 @@ PLAN="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level 
   warn "could not resolve test_plan for workload=$WORKLOAD level=$LEVEL"
   exit 2
 }
+LOAD_UNIT="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level "$LEVEL" --load-unit 2>/dev/null || true)"
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 SESSION="reports/session-${WORKLOAD}-${LEVEL}-${TS}"
@@ -76,7 +77,7 @@ info "Session ${SESSION} (workload=${WORKLOAD} level=${LEVEL})"
 
 phase_entries=()
 i=0
-while IFS=$'\t' read -r group role scenario envcsv; do
+while IFS=$'\t' read -r group role scenario envcsv load; do
   [[ -z "${group:-}" ]] && continue
   i=$((i+1))
   nn=$(printf '%02d' "$i")
@@ -103,7 +104,8 @@ while IFS=$'\t' read -r group role scenario envcsv; do
     warn "phase ${nn} produced no run.json; skipping analysis"
   fi
 
-  phase_entries+=("    {\"group\": \"${group}\", \"role\": \"${role}\", \"scenario\": \"${scenario}\", \"dir\": \"${phase_dirname}\", \"env\": \"${envcsv}\"}")
+  if [[ -z "${load:-}" || "$load" == "-" ]]; then load_json="null"; else load_json="$load"; fi
+  phase_entries+=("    {\"group\": \"${group}\", \"role\": \"${role}\", \"scenario\": \"${scenario}\", \"dir\": \"${phase_dirname}\", \"env\": \"${envcsv}\", \"load\": ${load_json}}")
 done <<< "$PLAN"
 
 # session.json manifest
@@ -111,6 +113,7 @@ done <<< "$PLAN"
   printf '{\n'
   printf '  "workload": "%s",\n' "$WORKLOAD"
   printf '  "level": "%s",\n' "$LEVEL"
+  printf '  "load_unit": "%s",\n' "$LOAD_UNIT"
   printf '  "created_iso": "%s",\n' "$CREATED_ISO"
   printf '  "prometheus_url": "%s",\n' "$PROM_URL"
   printf '  "phases": [\n'

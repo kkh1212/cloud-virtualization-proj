@@ -57,7 +57,21 @@ def _phase(group: str, role: str, spec: dict[str, Any]) -> dict[str, Any]:
     scenario = spec.get("scenario")
     if not scenario:
         raise WorkloadConfigError(f"test_plan phase '{role}' is missing a scenario")
-    return {"group": group, "role": role, "scenario": scenario, "env": spec.get("env") or {}}
+    return {
+        "group": group,
+        "role": role,
+        "scenario": scenario,
+        "env": spec.get("env") or {},
+        "load": spec.get("load"),  # ladder rung load (None for baselines/operational)
+    }
+
+
+def workload_load_unit(workload: str, config: dict[str, Any]) -> str:
+    """The test_plan load ladder unit (vus | rps | input_tokens), '' if unset."""
+    profiles = config.get("profiles", {})
+    plan = (profiles.get(workload) or {}).get("test_plan") or {}
+    unit = plan.get("load_unit")
+    return str(unit) if unit else ""
 
 
 def _env_csv(env: dict[str, Any]) -> str:
@@ -66,17 +80,25 @@ def _env_csv(env: dict[str, Any]) -> str:
     return ",".join(f"{key}={value}" for key, value in env.items())
 
 
+def _load_str(load: Any) -> str:
+    return "-" if load is None else str(load)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resolve workload+level into load-test phases.")
     parser.add_argument("--workload", required=True)
     parser.add_argument("--level", default="standard", choices=["quick", "standard", "full"])
     parser.add_argument("--config", default=None, help="workload-profiles.yaml path")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of TSV")
+    parser.add_argument("--load-unit", action="store_true", help="print the test_plan load_unit and exit")
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else BASE_DIR / "config" / "workload-profiles.yaml"
     try:
         config = load_workload_config(config_path)
+        if args.load_unit:
+            print(workload_load_unit(args.workload, config))
+            return 0
         phases = resolve_phases(args.workload, args.level, config)
     except (WorkloadConfigError, OSError) as exc:
         print(f"[workload-plan] {exc}", file=sys.stderr)
@@ -85,9 +107,12 @@ def main() -> int:
     if args.json:
         print(json.dumps(phases, ensure_ascii=False, indent=2))
     else:
-        # group<TAB>role<TAB>scenario<TAB>ENVCSV  (one phase per line)
+        # group<TAB>role<TAB>scenario<TAB>ENVCSV<TAB>LOAD  (one phase per line)
         for phase in phases:
-            print(f"{phase['group']}\t{phase['role']}\t{phase['scenario']}\t{_env_csv(phase['env'])}")
+            print(
+                f"{phase['group']}\t{phase['role']}\t{phase['scenario']}\t"
+                f"{_env_csv(phase['env'])}\t{_load_str(phase['load'])}"
+            )
     return 0
 
 

@@ -22,8 +22,8 @@ def _container(deployment: dict) -> dict:
     return deployment["spec"]["template"]["spec"]["containers"][0]
 
 
-def test_rag_uses_initial_config_and_keda_nvidia():
-    req = ProvisionRequest(workload="rag_internal_qa", concurrent_users=32)
+def test_code_uses_initial_config_and_keda_nvidia():
+    req = ProvisionRequest(workload="code_assistant", concurrent_users=32)
     resolved = resolve_config(req, CFG)
     assert resolved["max_model_len"] == 16384  # from initial_config
     assert resolved["autoscaler"] == "keda_queue"
@@ -40,7 +40,7 @@ def test_rag_uses_initial_config_and_keda_nvidia():
 
 def test_override_and_hpa_and_amd():
     req = ProvisionRequest(
-        workload="document_summary",
+        workload="doc_summary",
         gpu_vendor="amd",
         max_model_len=2048,
         autoscaler="hpa_cpu",
@@ -54,7 +54,7 @@ def test_override_and_hpa_and_amd():
 
 
 def test_no_autoscaling_omits_autoscaler():
-    req = ProvisionRequest(workload="faq_chatbot", autoscaling=False)
+    req = ProvisionRequest(workload="support_chat", autoscaling=False)
     manifests = build_manifests(resolve_config(req, CFG))
     assert "02-autoscaler.yaml" not in manifests
 
@@ -65,7 +65,7 @@ def test_unknown_workload_raises():
 
 
 def test_write_manifests_emits_valid_files(tmp_path):
-    req = ProvisionRequest(workload="faq_chatbot")
+    req = ProvisionRequest(workload="support_chat")
     resolved = resolve_config(req, CFG)
     written = write_manifests(build_manifests(resolved), tmp_path, resolved)
     names = {p.name for p in written}

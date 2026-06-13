@@ -27,7 +27,7 @@ warn() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run-experiment.sh <short_prompt|long_prompt|long_input|long_output|rag_like|burst_traffic|mixed_workload|sustained_ramp> [options]
+Usage: scripts/run-experiment.sh <short_prompt|long_prompt|long_input|long_output|rag_like|json_extraction|burst_traffic|mixed_workload|sustained_ramp> [options]
 
 Options:
   --high                Run burst_traffic with BURST_INTENSITY=high.
@@ -164,7 +164,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$SCENARIO" in
-  short_prompt|long_prompt|long_input|long_output|rag_like|burst_traffic|mixed_workload|sustained_ramp)
+  short_prompt|long_prompt|long_input|long_output|rag_like|json_extraction|burst_traffic|mixed_workload|sustained_ramp)
     ;;
   "")
     warn "Scenario is required"

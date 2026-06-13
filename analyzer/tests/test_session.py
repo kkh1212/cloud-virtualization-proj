@@ -76,3 +76,56 @@ def test_render_markdown_has_sections(tmp_path):
     assert "# LLM 워크로드 세션 리포트" in md
     assert "## 2. Phase별 결과" in md
     assert "부적합" in md
+
+
+def _write_ladder_session(tmp_path):
+    # increasing-load ladder: safe through 20 vus, degrades at 40, breaks at 80
+    phases = [
+        ("common_baseline", "common_baseline", None, _phase_report("suitable", 100.0, None, 1.0, 0.3)),
+        ("target_baseline", "target_baseline", None, _phase_report("suitable", 100.0, None, 2.0, 0.5)),
+        ("stress", "conc_10", 10, _phase_report("suitable", 100.0, None, 2.5, 0.6)),
+        ("stress", "conc_20", 20, _phase_report("suitable", 90.0, None, 2.8, 0.8)),
+        ("stress", "conc_40", 40, _phase_report("partially_suitable", 50.0, "queue", 4.0, 1.2)),
+        ("stress", "conc_80", 80, _phase_report("unsuitable", 0.0, "queue", 9.0, 2.5)),
+    ]
+    manifest_phases = []
+    for index, (group, role, load, report) in enumerate(phases, start=1):
+        dirname = f"{index:02d}-{group}-{role}"
+        (tmp_path / dirname).mkdir()
+        (tmp_path / dirname / "report.json").write_text(report.model_dump_json(), encoding="utf-8")
+        manifest_phases.append(
+            {"group": group, "role": role, "scenario": "x", "dir": dirname, "env": "-", "load": load}
+        )
+    (tmp_path / "session.json").write_text(
+        json.dumps(
+            {
+                "workload": "support_chat",
+                "level": "standard",
+                "load_unit": "vus",
+                "created_iso": "2026-06-12T12:00:00Z",
+                "prometheus_url": "http://localhost:9090",
+                "phases": manifest_phases,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_capacity_knee_detected(tmp_path):
+    _write_ladder_session(tmp_path)
+    cap = build_session(tmp_path)["capacity"]
+    assert cap["load_unit"] == "vus"
+    assert cap["rungs_evaluated"] == 4
+    assert cap["safe"]["load"] == 20          # last suitable in the leading prefix
+    assert cap["knee"]["load"] == 40          # first degraded rung
+    assert cap["knee"]["verdict"] == "partially_suitable"
+    assert cap["break"]["load"] == 80         # first unsuitable rung
+    assert cap["limiting_bottleneck"] == "queue"
+
+
+def test_capacity_section_renders(tmp_path):
+    _write_ladder_session(tmp_path)
+    md = render_markdown(build_session(tmp_path))
+    assert "## 4. 부하 한계(용량) 판정" in md
+    assert "20 vus" in md          # safe capacity shown
+    assert "## 5. 종합 판단" in md
