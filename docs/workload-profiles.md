@@ -15,7 +15,7 @@ bottleneck, so the load test and the recommendation are meaningful.
 |---|---|---|---|---|
 | `support_chat` | Customer-support RAG chatbot (Intercom Fin, Zendesk AI) | short question + medium RAG context → short/medium output, interactive | **TTFT + queue** under concurrency | `ttft_p95`, `queue_wait_p95`, `p95_latency`, `requests_waiting` |
 | `doc_summary` | Doc / meeting / channel summary (Slack AI, Notion AI, M365 Copilot) | long input → medium output | **prefill + GPU memory / KV cache** as input grows | `ttft_p95`, `prompt_tokens_p95`, `gpu_memory_used_ratio`, `kv_cache_ratio` |
-| `code_assistant` | Coding assistant (Copilot, Cursor) | medium/long code → code output | **prefill+decode mix** (TPOT / tail latency) | `tpot_p95`, `ttft_p95`, `p99_latency`, `output_token_rate` |
+| `code_assistant` | Coding assistant (Copilot, Cursor) | fixed code context → increasingly long code output | **decode / TPOT / p99 tail latency** as output grows | `tpot_p95`, `ttft_p95`, `p99_latency`, `output_tokens_p95`, `output_token_rate` |
 | `json_extraction` | Extraction / classification / routing (CRM & email automation) | short input → tiny JSON output, high RPS | **throughput / queue** (p99 stability) | `p99_latency`, `queue_wait_p95`, `requests_waiting` |
 
 These four cover the three serving regimes (prefill / decode / queue-throughput)
@@ -34,12 +34,12 @@ defines a **monotonic load ladder** (`stress`), sized to the workload's weight:
 
 - `support_chat` ramps concurrency (RAG_VUS 8 → 16 → 32 → 64)
 - `doc_summary` ramps input length (4k → 8k → 16k → 32k tokens)
-- `code_assistant` ramps concurrency (VUs 2 → 5 → 10 → 20)
-- `json_extraction` ramps arrival rate (50 → 100 → 200 → 300 RPS)
+- `code_assistant` fixes code context/concurrency and ramps output length (128 → 256 → 512 → 1024 output tokens)
+- `json_extraction` ramps arrival rate conservatively (10 → 25 → 50 → 100 RPS)
 
 Each rung runs as its own analyzable phase. A common LLM baseline runs first so a
 workload is never judged in isolation. `test_plan.load_unit` (`vus | input_tokens |
-rps`) labels the rung load. Levels: `quick` (baselines only), `standard` (full
+output_tokens | rps`) labels the rung load. Levels: `quick` (baselines only), `standard` (full
 ladder = the capacity test), `full` (+ operational burst/ramp/mixed).
 
 ## 3. What the report tells you — the capacity knee
@@ -73,7 +73,10 @@ support_chat: queue_wait·TTFT가 동시성 40부터 급등하는데 GPU util은
 doc_summary: 입력 16k에서 gpu_memory_used_ratio 0.9 초과 / OOM
   → max_model_len 조정 또는 더 큰 VRAM / concurrency 하향 → 같은 입력서 OOM 소멸 기대
 
-json_extraction: 100 RPS부터 p99·queue 급등
+code_assistant: output 512~1024 tokens에서 TPOT·p99 급등
+  → max_tokens 제한 / streaming / 긴 코드 생성 요청 분리 → 같은 context에서 p99·TPOT 완화 기대
+
+json_extraction: 50~100 RPS부터 p99·queue 급등
   → replica 상향 / KEDA queue → 더 높은 RPS까지 p99 안정 기대
 ```
 

@@ -67,7 +67,7 @@ def _phase(group: str, role: str, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def workload_load_unit(workload: str, config: dict[str, Any]) -> str:
-    """The test_plan load ladder unit (vus | rps | input_tokens), '' if unset."""
+    """The test_plan load ladder unit (vus | rps | input_tokens | output_tokens), '' if unset."""
     profiles = config.get("profiles", {})
     plan = (profiles.get(workload) or {}).get("test_plan") or {}
     unit = plan.get("load_unit")

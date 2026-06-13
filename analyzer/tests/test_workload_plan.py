@@ -44,7 +44,26 @@ def test_baselines_have_no_load_but_ladder_does():
 def test_load_unit_reported_per_workload():
     assert workload_load_unit("support_chat", CFG) == "vus"
     assert workload_load_unit("doc_summary", CFG) == "input_tokens"
+    assert workload_load_unit("code_assistant", CFG) == "output_tokens"
     assert workload_load_unit("json_extraction", CFG) == "rps"
+
+
+def test_code_assistant_ramps_output_length_not_concurrency():
+    phases = resolve_phases("code_assistant", "standard", CFG)
+    stress = [p for p in phases if p["group"] == "stress"]
+    loads = [p["load"] for p in stress]
+    assert loads == [128, 256, 512, 1024]
+    assert [p["env"]["LONG_OUTPUT_MAX_TOKENS"] for p in stress] == loads
+    assert {p["env"]["LONG_OUTPUT_INPUT_TOKENS"] for p in stress} == {4000}
+    assert {p["env"]["LONG_OUTPUT_VUS"] for p in stress} == {2}
+
+
+def test_json_extraction_uses_conservative_rps_ladder():
+    phases = resolve_phases("json_extraction", "standard", CFG)
+    stress = [p for p in phases if p["group"] == "stress"]
+    loads = [p["load"] for p in stress]
+    assert loads == [10, 25, 50, 100]
+    assert [p["env"]["EXTRACT_RATE"] for p in stress] == loads
 
 
 def test_full_adds_operational():

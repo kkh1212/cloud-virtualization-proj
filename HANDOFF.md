@@ -3,9 +3,67 @@
 > 다른 환경(로컬 머신 등)의 Claude Code 가 이 repo 를 clone 한 뒤 작업을 그대로 이어받기 위한 핸드오프 문서.
 > **세션 시작 시 CLAUDE.md → 이 문서 순서로 읽으면 맥락이 복원된다.**
 >
-> - 마지막 갱신: 2026-05-17 (Azure dev VM → 로컬 이전 시점)
-> - 직전 작업 환경: Azure VM (Ubuntu, k3s 단일 노드, GPU 없음)
+> - 마지막 갱신: **2026-06-14** (워크로드 4종 + capacity ladder + Pipeline B 반영). 이전 본문(§1~)은 2026-05-17 기록으로 보존됨.
+> - 직전 작업 환경: GPU 서버에서 vLLM 검증 진행 중 (Windows 에서는 unit test 까지만 가능)
 > - GitHub: `kkh1212/cloud-virtualization-proj` (branch `main`)
+
+---
+
+## 0. 최신 상태 (2026-06-14) — 먼저 읽기
+
+> 아래 §1~§21 은 2026-05-17 시점(8워크로드, GPU 없음) 기록이라 일부 옛 이름/전제가 남아 있다.
+> 인프라 설치 절차(§6)·KEDA(§19)는 여전히 유효하지만, **워크로드 정의·부하 모델·판정은 이 §0 이 최신이다.**
+
+### 이번에 바뀐 핵심 2가지
+1. **서비스 워크로드 구체화 (8 → 4)** — 실제 서비스 기준으로 통합, 각각 다른 서빙 병목을 대표:
+
+   | 워크로드 | 실제 서비스 | 부하 ladder 축 | 지배 병목 |
+   |---|---|---|---|
+   | `support_chat` | 고객지원 RAG 챗봇 | 동시성 8→16→32→64 (vus) | TTFT + queue |
+   | `doc_summary` | 문서/회의록 요약 | 입력 4k→8k→16k→32k (input_tokens) | prefill + GPU mem/KV |
+   | `code_assistant` | 코딩 보조 | 출력 128→256→512→1024 tokens | decode / TPOT / p99 |
+   | `json_extraction` | 구조화 추출/분류 (신규) | 10→25→50→100 RPS | throughput / queue |
+
+   정의는 `analyzer/config/workload-profiles.yaml` 한 곳 (thresholds / recommendations / initial_config / test_plan).
+
+2. **부하 모델: 단일 부하 → 점진 ladder + 한계점(knee)** — 작은 부하부터 단계적으로 올려 각 단의 SLO 를 평가하고
+   **safe(마지막 통과) / knee(첫 저하=partially) / break(첫 부적합=unsuitable) + 한계 병목** 을 산출.
+   - 판정 로직: `analyzer/workload.py` `build_workload_fit` (단별 suitable/partial/unsuitable) → `analyzer/session.py` `_capacity` (사다리 훑어 knee).
+   - 신규 시나리오 `loadtests/json_extraction.js` (constant-arrival-rate, `EXTRACT_RATE`).
+
+### 두 파이프라인
+- **Pipeline A (진단)**: `scripts/run-workload.sh <workload> --level standard` → k6 ladder(공통 baseline + target + stress 사다리 + operational) → 각 phase analyzer → `analyzer.session` 집계 → `reports/session-<workload>-<level>-<ts>/session-report.md` 의 §4 "부하 한계(용량) 판정".
+- **Pipeline B (프로비저닝, 신규)**: `scripts/run-pipeline-b.sh <workload>` → `analyzer.provision` 이 vLLM K8s 매니페스트 생성(`k8s/generated/<workload>/{run,recommended}/` 의 00-namespace ~ 05-autoscaler) → `run` 프로필(1 replica, autoscaling off, 단일 GPU 실행용) 자동 apply → vLLM rollout 대기 → 같은 ladder 실행.
+- **세션 비교 (신규)**: `analyzer.session_compare --before <세션> --after <세션>` → safe/knee/break·verdict·phase delta 를 `session-comparison.md/json` 으로. (개선안 적용 후 knee 가 오른쪽으로 갔는지 확인)
+
+### 정책
+- **GPU 켜짐 전제**: `--target vllm` 이면 `metrics-vllm-nvidia.yaml` 사용 → GPU threshold(`gpu_memory_used_ratio` 등) 자동 활성. mock 에선 자동 skip.
+- **비용 제외**: `--cost-profile` 은 opt-in 이고 세션 파이프라인은 안 넘김 → 리포트에 비용 섹션 없음. `cost.py` 는 보존.
+- **품질지표(JSON valid/groundedness/syntax)는 vLLM 단계로 연기**: mock 출력이 가짜라 지금은 무의미.
+
+### 상태 / 남은 일
+- `analyzer/.venv/Scripts/pytest analyzer/tests` → **74 passed** (Windows, 2026-06-14).
+- **남은 1순위 = GPU 서버 end-to-end 실측**: 실제 vLLM 로 ladder 를 돌려 `session-report.md` 의 safe/knee/break 가 실제로 채워지는지, Pipeline B 배포가 도는지 확인. (Windows 에선 k6/cluster 불가라 unit test 까지만 검증됨.)
+- 임계값(각 워크로드 thresholds)은 통념 기반 초기값 → GPU baseline 후 조정 가능.
+
+### 자주 쓰는 명령 (최신)
+```bash
+# 진단(Pipeline A): mock 또는 vLLM 으로 워크로드 ladder
+bash scripts/run-workload.sh support_chat --level standard            # mock
+bash scripts/run-workload.sh doc_summary  --level standard --target vllm --gpu-vendor nvidia
+cat reports/session-*/session-report.md                               # §4 safe/knee/break
+
+# 프로비저닝(Pipeline B): 워크로드 → vLLM 매니페스트 생성·배포·ladder
+bash scripts/run-pipeline-b.sh support_chat --level standard --gpu-vendor nvidia \
+  --model Qwen/Qwen2.5-0.5B-Instruct --served-model-name mock
+
+# 개선 전/후 세션 비교
+analyzer/.venv/bin/python -m analyzer.session_compare \
+  --before reports/session-support_chat-standard-<before> \
+  --after  reports/session-support_chat-standard-<after>
+```
+
+설계 배경·closed-loop 는 `docs/workload-profiles.md` 참고.
 
 ---
 

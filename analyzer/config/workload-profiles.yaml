@@ -4,7 +4,7 @@
 # bottleneck so the load test and the recommendation are meaningful:
 #   support_chat   -> TTFT + queue (interactive concurrency)
 #   doc_summary    -> prefill + GPU memory / KV cache (long input)
-#   code_assistant -> prefill+decode mix (TPOT / tail latency)
+#   code_assistant -> decode / TPOT under longer code generation
 #   json_extraction-> throughput / queue (high RPS, tiny output)
 #
 # This file IS consumed by the analyzer (analyzer/workload.py) and the session
@@ -117,10 +117,10 @@ profiles:
 
   code_assistant:
     description: "Coding assistant (GitHub Copilot, Cursor). Code/context in, code/explanation out, used interactively in the IDE."
-    request_shape: "medium/long code context, medium code output, mixed prefill+decode"
+    request_shape: "fixed medium/long code context, increasingly long code output, decode-heavy"
     primary_scenarios: ["long_output", "long_input", "mixed_workload"]
-    watch_metrics: ["ttft_p95", "tpot_p95", "p99_latency", "prompt_tokens_p95", "output_token_rate"]
-    bottleneck_focus: "TPOT / tail latency under decode, TTFT for interactivity"
+    watch_metrics: ["ttft_p95", "tpot_p95", "p99_latency", "prompt_tokens_p95", "output_tokens_p95", "output_token_rate", "queue_wait_p95"]
+    bottleneck_focus: "TPOT / p99 tail latency as output code length grows"
     slo_profile: long_context
     thresholds:
       ttft_p95:          { max: 2.0,  agg: peak, weight: 1 }
@@ -129,9 +129,9 @@ profiles:
       prompt_tokens_p95: { max: 8000, agg: peak, weight: 1 }
       output_token_rate: { min: 20,   agg: mean, weight: 1 }
     recommendations:
-      prefill: ["관련 코드만 선택(repo context selection)", "파일 수 제한", "RAG 방식 코드 검색"]
-      decode:  ["output max_tokens 조정", "streaming 응답 권장", "coder 특화 모델 검토"]
-      latency: ["coding 전용 pool 분리", "p99 long-tail 요청군 분리"]
+      prefill: ["select only relevant code context", "limit files/snippets per request", "deduplicate repeated repo context"]
+      decode:  ["cap max_tokens for interactive code generation", "enable streaming responses", "split very long code generation into smaller steps"]
+      latency: ["separate interactive completions from long generation requests", "isolate coding traffic in a dedicated serving pool", "review p99 long-tail requests separately"]
     initial_config:
       model_size_hint: medium
       max_tokens: 1536
@@ -141,14 +141,14 @@ profiles:
       gpu_memory_utilization: 0.90
       request_timeout_seconds: 90
     test_plan:
-      load_unit: vus
+      load_unit: output_tokens
       common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
-      target_baseline: { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 600, LONG_OUTPUT_VUS: 2 } }
+      target_baseline: { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 256, LONG_OUTPUT_VUS: 2 } }
       stress:
-        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 600, LONG_OUTPUT_VUS: 2 },  load: 2,  role: conc_2 }
-        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 600, LONG_OUTPUT_VUS: 5 },  load: 5,  role: conc_5 }
-        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 600, LONG_OUTPUT_VUS: 10 }, load: 10, role: conc_10 }
-        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 600, LONG_OUTPUT_VUS: 20 }, load: 20, role: conc_20 }
+        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 128,  LONG_OUTPUT_VUS: 2 }, load: 128,  role: output_128 }
+        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 256,  LONG_OUTPUT_VUS: 2 }, load: 256,  role: output_256 }
+        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 512,  LONG_OUTPUT_VUS: 2 }, load: 512,  role: output_512 }
+        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 1024, LONG_OUTPUT_VUS: 2 }, load: 1024, role: output_1024 }
       operational: [ { scenario: mixed_workload, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
@@ -181,12 +181,12 @@ profiles:
     test_plan:
       load_unit: rps
       common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
-      target_baseline: { scenario: json_extraction, env: { EXTRACT_RATE: 20 } }
+      target_baseline: { scenario: json_extraction, env: { EXTRACT_RATE: 10 } }
       stress:
+        - { scenario: json_extraction, env: { EXTRACT_RATE: 10 },  load: 10,  role: rps_10 }
+        - { scenario: json_extraction, env: { EXTRACT_RATE: 25 },  load: 25,  role: rps_25 }
         - { scenario: json_extraction, env: { EXTRACT_RATE: 50 },  load: 50,  role: rps_50 }
         - { scenario: json_extraction, env: { EXTRACT_RATE: 100 }, load: 100, role: rps_100 }
-        - { scenario: json_extraction, env: { EXTRACT_RATE: 200 }, load: 200, role: rps_200 }
-        - { scenario: json_extraction, env: { EXTRACT_RATE: 300 }, load: 300, role: rps_300 }
       operational: [ { scenario: burst_traffic, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
