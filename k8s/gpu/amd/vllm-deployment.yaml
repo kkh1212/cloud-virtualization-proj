@@ -53,6 +53,8 @@ spec:
             - "$(SERVED_MODEL_NAME)"
             - --max-model-len
             - "$(MAX_MODEL_LEN)"
+            - --max-num-seqs
+            - "$(MAX_NUM_SEQS)"
             - --gpu-memory-utilization
             - "$(GPU_MEMORY_UTILIZATION)"
             - --dtype
@@ -70,6 +72,8 @@ spec:
               value: mock
             - name: MAX_MODEL_LEN
               value: "4096"
+            - name: MAX_NUM_SEQS
+              value: "256"
             - name: GPU_MEMORY_UTILIZATION
               value: "0.85"
             - name: DTYPE

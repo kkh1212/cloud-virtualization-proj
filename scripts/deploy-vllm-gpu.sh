@@ -21,6 +21,7 @@ Options:
                               NVIDIA default: vllm/vllm-openai:v0.11.2
                               AMD default:    vllm/vllm-openai-rocm:latest
   --max-model-len TOKENS        Default: 4096
+  --max-num-seqs NUM            Default: 256
   --gpu-memory-utilization NUM  Default: 0.85
   --dtype DTYPE                 Default: auto
   --skip-wait                   Do not wait for rollout.
@@ -28,7 +29,7 @@ Options:
 
 Equivalent environment overrides:
   GPU_VENDOR, MODEL_ID, SERVED_MODEL_NAME, VLLM_IMAGE, MAX_MODEL_LEN,
-  GPU_MEMORY_UTILIZATION, DTYPE, VLLM_ROLLOUT_TIMEOUT, HF_TOKEN
+  GPU_MEMORY_UTILIZATION, MAX_NUM_SEQS, DTYPE, VLLM_ROLLOUT_TIMEOUT, HF_TOKEN
 EOF
 }
 
@@ -37,6 +38,7 @@ MODEL_ID="${MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-mock}"
 VLLM_IMAGE="${VLLM_IMAGE:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
 DTYPE="${DTYPE:-auto}"
 ROLLOUT_TIMEOUT="${VLLM_ROLLOUT_TIMEOUT:-30m}"
@@ -57,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --served-model-name) SERVED_MODEL_NAME="$2"; shift 2 ;;
     --image) VLLM_IMAGE="$2"; shift 2 ;;
     --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
+    --max-num-seqs) MAX_NUM_SEQS="$2"; shift 2 ;;
     --gpu-memory-utilization) GPU_MEMORY_UTILIZATION="$2"; shift 2 ;;
     --dtype) DTYPE="$2"; shift 2 ;;
     --skip-wait) SKIP_WAIT=1; shift ;;
@@ -111,6 +114,7 @@ kubectl -n llm-ops set env deployment/vllm \
   "MODEL_ID=${MODEL_ID}" \
   "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}" \
   "MAX_MODEL_LEN=${MAX_MODEL_LEN}" \
+  "MAX_NUM_SEQS=${MAX_NUM_SEQS}" \
   "GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION}" \
   "DTYPE=${DTYPE}" \
   "VLLM_PORT=29500"
