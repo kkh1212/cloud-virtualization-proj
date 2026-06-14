@@ -9,8 +9,8 @@ from analyzer.session import build_session, render_markdown
 BASE = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
 
 
-def _phase_report(verdict, score, bottleneck, p95, ttft) -> Report:
-    return Report(
+def _phase_report(verdict, score, bottleneck, p95, ttft, missing=None) -> Report:
+    report = Report(
         scenario="x",
         time_range=(BASE, BASE + timedelta(minutes=2)),
         summary={},
@@ -26,6 +26,9 @@ def _phase_report(verdict, score, bottleneck, p95, ttft) -> Report:
         diagnosis=[],
         improvements=[],
     )
+    if report.workload_fit is not None and missing:
+        report.workload_fit["missing_required_metrics"] = missing
+    return report
 
 
 def _write_session(tmp_path):
@@ -126,6 +129,55 @@ def test_capacity_knee_detected(tmp_path):
 def test_capacity_section_renders(tmp_path):
     _write_ladder_session(tmp_path)
     md = render_markdown(build_session(tmp_path))
-    assert "## 4. 부하 한계(용량) 판정" in md
+    assert "## 5. 부하 한계(용량) 판정" in md
     assert "20 vus" in md          # safe capacity shown
-    assert "## 5. 기준 해석" in md
+    assert "## 6. 기준 해석" in md
+
+
+def test_measurement_failed_is_not_safe_or_break(tmp_path):
+    phases = [
+        ("stress", "doc_4k", 4000, _phase_report("suitable", 100.0, None, 1.0, 0.2)),
+        (
+            "stress",
+            "doc_32k",
+            32000,
+            _phase_report(
+                "measurement_failed",
+                None,
+                "measurement",
+                None,
+                None,
+                missing=["p95_latency", "ttft_p95"],
+            ),
+        ),
+    ]
+    manifest_phases = []
+    for index, (group, role, load, report) in enumerate(phases, start=1):
+        dirname = f"{index:02d}-{group}-{role}"
+        (tmp_path / dirname).mkdir()
+        (tmp_path / dirname / "report.json").write_text(report.model_dump_json(), encoding="utf-8")
+        manifest_phases.append(
+            {"group": group, "role": role, "scenario": "x", "dir": dirname, "env": "-", "load": load}
+        )
+    (tmp_path / "session.json").write_text(
+        json.dumps(
+            {
+                "workload": "doc_summary",
+                "level": "standard",
+                "load_unit": "input_tokens",
+                "created_iso": "2026-06-12T12:00:00Z",
+                "phases": manifest_phases,
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = build_session(tmp_path)
+    cap = session["capacity"]
+    assert session["overall_verdict"] == "measurement_failed"
+    assert cap["safe"]["load"] == 4000
+    assert cap["knee"] is None
+    assert cap["break"] is None
+    assert cap["measurement_failed"]["load"] == 32000
+    md = render_markdown(session)
+    assert "## 3. 측정 실패 phase" in md
+    assert "p95_latency, ttft_p95" in md

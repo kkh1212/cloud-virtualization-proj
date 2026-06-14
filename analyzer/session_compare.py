@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_VERDICT_ORDER = {"unsuitable": 0, "partially_suitable": 1, "suitable": 2}
+_VERDICT_ORDER = {
+    "measurement_failed": -1,
+    "unsuitable": 0,
+    "partially_suitable": 1,
+    "suitable": 2,
+}
 
 
 def build_session_comparison(before_dir: Path, after_dir: Path) -> dict[str, Any]:

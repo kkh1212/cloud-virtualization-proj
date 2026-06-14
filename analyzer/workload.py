@@ -1,14 +1,18 @@
-"""Workload-fit judgment: is the current config appropriate for the chosen workload?
+"""Workload load-criteria judgment for the chosen workload.
 
 Single source of workload truth is analyzer/config/workload-profiles.yaml, mirroring
 the SLO/cost-profile mechanism. build_workload_fit() compares observed metrics against
 the workload's per-metric thresholds and produces a suitable / partially_suitable /
-unsuitable verdict + a 0-100 suitability score + the dominant bottleneck category.
+unsuitable verdict + a 0-100 score + the dominant bottleneck category.
 
 A threshold whose underlying metric is absent from the snapshot is skipped (not
 failed) — same gating philosophy as Rule.required_metrics and slo.py. This lets GPU
 thresholds (gpu_utilization, gpu_memory_used_ratio) skip cleanly on the mock pipeline
 and activate automatically once vLLM/DCGM metrics are present.
+
+Workload profiles may additionally declare required_metrics. Those are not optional:
+if any required metric is absent, the run is marked measurement_failed so empty
+Prometheus/k6 data cannot look like a passing workload phase.
 """
 from __future__ import annotations
 
@@ -65,6 +69,10 @@ def build_workload_fit(
 ) -> dict[str, Any]:
     profile = _profile(workload_name, config)
     thresholds = profile.get("thresholds", {}) or {}
+    required_metrics = [str(metric) for metric in profile.get("required_metrics", []) or []]
+    missing_required = [
+        metric for metric in required_metrics if _series_missing(snapshot, metric)
+    ]
 
     checks: list[dict[str, Any]] = []
     for metric, spec in thresholds.items():
@@ -79,7 +87,10 @@ def build_workload_fit(
 
     critical_failed = [c for c in failed if c.get("critical")]
 
-    if not evaluated:
+    if missing_required:
+        verdict: str | None = "measurement_failed"
+        score: float | None = None
+    elif not evaluated:
         verdict: str | None = None
         score: float | None = None
     else:
@@ -102,40 +113,54 @@ def build_workload_fit(
         "slo_profile": profile.get("slo_profile"),
         "verdict": verdict,
         "score": score,
-        "bottleneck": _dominant_bottleneck(failed),
+        "bottleneck": "measurement" if missing_required else _dominant_bottleneck(failed),
         "recommendations": profile.get("recommendations", {}) or {},
+        "required_metrics": required_metrics,
+        "missing_required_metrics": missing_required,
         "checks": checks,
         "counts": {
             "evaluated": len(evaluated),
             "passed": len(passed),
             "failed": len(failed),
             "skipped": skipped,
+            "missing_required": len(missing_required),
         },
     }
 
 
 def workload_fit_result(workload_fit: dict[str, Any]) -> RuleResult | None:
-    """Turn a non-suitable verdict into a diagnosis entry (optional flow into improvements)."""
+    """Turn a non-passing verdict into a diagnosis entry (optional flow into improvements)."""
     verdict = workload_fit.get("verdict")
-    if verdict not in ("partially_suitable", "unsuitable"):
+    if verdict not in ("measurement_failed", "partially_suitable", "unsuitable"):
         return None
     failed = [c for c in workload_fit.get("checks", []) if c["met"] is False]
     evidence = {
         c["metric"]: {"target": c["target"], "observed": round(c["observed"], 6)}
         for c in failed
     }
+    missing = workload_fit.get("missing_required_metrics") or []
+    if missing:
+        evidence["missing_required_metrics"] = missing
     severity = "critical" if verdict == "unsuitable" else "warning"
     workload = workload_fit.get("workload")
     bottleneck = workload_fit.get("bottleneck")
     verdict_label = {
+        "measurement_failed": "측정 실패",
         "partially_suitable": "주의",
         "unsuitable": "기준 미통과",
     }.get(verdict, verdict)
-    suggestion = (
-        f"워크로드 '{workload}' 부하 기준 {verdict_label}"
-        + (f" (주요 병목: {bottleneck})." if bottleneck else ".")
-        + " 4종 부하테스트 확인 후 권장(playbook)을 참고해 설정을 조정하세요."
-    )
+    if verdict == "measurement_failed":
+        suggestion = (
+            f"워크로드 '{workload}' 부하 기준 측정 실패. "
+            f"누락 지표: {', '.join(missing) if missing else 'unknown'}. "
+            "Prometheus scrape, vLLM metric 이름, k6 실패 여부를 확인하고 재실험하세요."
+        )
+    else:
+        suggestion = (
+            f"워크로드 '{workload}' 부하 기준 {verdict_label}"
+            + (f" (주요 병목: {bottleneck})." if bottleneck else ".")
+            + " 4종 부하테스트 확인 후 권장(playbook)을 참고해 설정을 조정하세요."
+        )
     return RuleResult(
         rule_id="workload_fit",
         triggered=True,
@@ -165,7 +190,7 @@ def _evaluate_threshold(
     weight = _number(spec.get("weight", 1), f"{metric}.weight")
 
     series = snapshot.series.get(metric)
-    if series is None or series.length() == 0:
+    if _series_missing(snapshot, metric):
         # Metric not collected in this run -> skip (not a failure).
         return {
             "metric": metric,
@@ -241,6 +266,11 @@ def _critical_breach(
             multiplier = _number(spec["critical_multiplier"], "critical_multiplier")
             return multiplier != 0 and observed <= target / multiplier
     return False
+
+
+def _series_missing(snapshot: MetricSnapshot, metric: str) -> bool:
+    series = snapshot.series.get(metric)
+    return series is None or series.length() == 0
 
 
 def _profile(workload_name: str, config: dict[str, Any]) -> dict[str, Any]:

@@ -67,7 +67,13 @@ def test_all_pass_is_suitable_score_100():
     assert fit["score"] == 100.0
     assert fit["bottleneck"] is None
     # gpu_utilization absent -> skipped, not failed
-    assert fit["counts"] == {"evaluated": 4, "passed": 4, "failed": 0, "skipped": 1}
+    assert fit["counts"] == {
+        "evaluated": 4,
+        "passed": 4,
+        "failed": 0,
+        "skipped": 1,
+        "missing_required": 0,
+    }
 
 
 def test_one_fail_is_partially_suitable_with_weighted_score():
@@ -127,6 +133,47 @@ def test_no_evaluable_metric_yields_none_verdict():
     assert fit["verdict"] is None
     assert fit["score"] is None
     assert fit["counts"]["evaluated"] == 0
+
+
+def test_missing_required_metric_yields_measurement_failed():
+    config = {
+        "profiles": {
+            "demo": {
+                "required_metrics": ["p95_latency", "ttft_p95"],
+                "thresholds": {
+                    "p95_latency": {"max": 3.0},
+                    "ttft_p95": {"max": 1.0},
+                    "gpu_utilization": {"min": 0.5},
+                },
+            }
+        }
+    }
+    fit = build_workload_fit(
+        snapshot(p95_latency=ts("p95_latency", [1.0])),
+        "demo",
+        config,
+    )
+    assert fit["verdict"] == "measurement_failed"
+    assert fit["score"] is None
+    assert fit["bottleneck"] == "measurement"
+    assert fit["missing_required_metrics"] == ["ttft_p95"]
+    # Optional GPU metric is still only skipped, not a measurement failure.
+    assert fit["counts"]["missing_required"] == 1
+
+
+def test_measurement_failed_creates_warning_diagnosis():
+    config = {
+        "profiles": {
+            "demo": {
+                "required_metrics": ["p95_latency"],
+                "thresholds": {"p95_latency": {"max": 3.0}},
+            }
+        }
+    }
+    result = workload_fit_result(build_workload_fit(snapshot(), "demo", config))
+    assert result is not None
+    assert result.severity == "warning"
+    assert result.evidence["missing_required_metrics"] == ["p95_latency"]
 
 
 def test_unknown_workload_raises():

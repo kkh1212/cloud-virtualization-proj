@@ -38,11 +38,12 @@ WORKLOAD=""
 LEVEL="standard"
 PASSTHROUGH=()
 PROM_URL="http://localhost:9090"
+TARGET="mock"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --level) LEVEL="$2"; shift 2 ;;
-    --target) PASSTHROUGH+=(--target "$2"); shift 2 ;;
+    --target) TARGET="$2"; PASSTHROUGH+=(--target "$2"); shift 2 ;;
     --gpu-vendor) PASSTHROUGH+=(--gpu-vendor "$2"); shift 2 ;;
     --base-url) PASSTHROUGH+=(--base-url "$2"); shift 2 ;;
     --model) PASSTHROUGH+=(--model "$2"); shift 2 ;;
@@ -68,6 +69,66 @@ PLAN="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level 
   exit 2
 }
 LOAD_UNIT="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level "$LEVEL" --load-unit 2>/dev/null || true)"
+
+preflight_vllm_shape() {
+  [[ "$TARGET" == "vllm" ]] || return 0
+  [[ "$WORKLOAD" == "doc_summary" ]] || return 0
+  [[ "$LOAD_UNIT" == "input_tokens" ]] || return 0
+
+  if ! command -v kubectl >/dev/null 2>&1; then
+    warn "kubectl not found; skipping vLLM max_model_len preflight"
+    return 0
+  fi
+
+  local max_model_len
+  max_model_len="$(kubectl -n llm-ops get deployment/vllm -o jsonpath='{.spec.template.spec.containers[?(@.name=="vllm")].env[?(@.name=="MAX_MODEL_LEN")].value}' 2>/dev/null || true)"
+  if [[ -z "$max_model_len" || ! "$max_model_len" =~ ^[0-9]+$ ]]; then
+    warn "could not read deployment/vllm MAX_MODEL_LEN; skipping doc_summary token-shape preflight"
+    return 0
+  fi
+
+  local max_request_tokens=0
+  local max_role="-"
+  local group role scenario envcsv load
+  while IFS=$'\t' read -r group role scenario envcsv load; do
+    [[ "$scenario" == "long_input" ]] || continue
+    local input_tokens=""
+    local max_tokens="300"
+    if [[ "$envcsv" != "-" ]]; then
+      local kv key value
+      IFS=',' read -ra kvs <<< "$envcsv"
+      for kv in "${kvs[@]}"; do
+        key="${kv%%=*}"
+        value="${kv#*=}"
+        case "$key" in
+          LONG_INPUT_TOKENS) input_tokens="$value" ;;
+          LONG_INPUT_MAX_TOKENS) max_tokens="$value" ;;
+        esac
+      done
+    fi
+    if [[ -z "$input_tokens" && "${load:-}" =~ ^[0-9]+$ ]]; then
+      input_tokens="$load"
+    fi
+    [[ "$input_tokens" =~ ^[0-9]+$ && "$max_tokens" =~ ^[0-9]+$ ]] || continue
+    local request_tokens=$((input_tokens + max_tokens))
+    if (( request_tokens > max_request_tokens )); then
+      max_request_tokens="$request_tokens"
+      max_role="$role"
+    fi
+  done <<< "$PLAN"
+
+  if (( max_request_tokens > max_model_len )); then
+    warn "doc_summary workload shape exceeds current vLLM MAX_MODEL_LEN"
+    warn "  largest phase: ${max_role} ≈ ${max_request_tokens} tokens"
+    warn "  deployment/vllm MAX_MODEL_LEN=${max_model_len}"
+    warn "Redeploy vLLM with a larger context before this test, for example:"
+    warn "  bash scripts/deploy-vllm-gpu.sh --vendor nvidia --model Qwen/Qwen2.5-0.5B-Instruct --served-model-name mock --max-model-len 32768"
+    exit 2
+  fi
+  info "vLLM max_model_len preflight OK (${max_request_tokens} requested <= ${max_model_len})"
+}
+
+preflight_vllm_shape
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 SESSION="reports/session-${WORKLOAD}-${LEVEL}-${TS}"

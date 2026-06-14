@@ -22,8 +22,14 @@ from typing import Any
 
 from analyzer.schemas import Report
 
-_VERDICT_ORDER = {"unsuitable": 0, "partially_suitable": 1, "suitable": 2}
+_VERDICT_ORDER = {
+    "measurement_failed": -1,
+    "unsuitable": 0,
+    "partially_suitable": 1,
+    "suitable": 2,
+}
 _VERDICT_LABEL = {
+    "measurement_failed": "측정 실패(measurement_failed)",
     "unsuitable": "기준 미통과(unsuitable)",
     "partially_suitable": "주의(partially_suitable)",
     "suitable": "기준 통과(suitable)",
@@ -48,6 +54,7 @@ def build_session(session_dir: Path) -> dict[str, Any]:
                 "verdict": fit.get("verdict"),
                 "score": fit.get("score"),
                 "bottleneck": fit.get("bottleneck"),
+                "missing_required_metrics": fit.get("missing_required_metrics") or [],
                 "p95_latency_peak_seconds": perf.get("p95_latency_peak_seconds"),
                 "ttft_p95_peak_seconds": llm.get("ttft_p95_peak_seconds"),
             }
@@ -88,8 +95,9 @@ def _capacity(phases: list[dict[str, Any]], load_unit: str) -> dict[str, Any]:
 
     The ladder rungs are evaluated in increasing-load order, so:
       - safe   = highest load in the leading all-`suitable` prefix,
-      - knee   = the first rung that degrades (partially_suitable or worse),
+      - knee   = the first rung that degrades (partially_suitable/unsuitable),
       - break  = the first `unsuitable` rung,
+      - measurement_failed = the first rung whose required metrics are missing,
       - limiting = the dominant bottleneck category at the knee.
     Loads may be None on legacy/manual sessions; verdict-based knee still works.
     """
@@ -107,8 +115,15 @@ def _capacity(phases: list[dict[str, Any]], load_unit: str) -> dict[str, Any]:
         else:
             break  # monotonic ladder: stop at the first non-suitable rung
 
-    knee_rung = next((r for r in rungs if r["verdict"] != "suitable"), None)
+    knee_rung = next(
+        (r for r in rungs if r["verdict"] in ("partially_suitable", "unsuitable")),
+        None,
+    )
     break_rung = next((r for r in rungs if r["verdict"] == "unsuitable"), None)
+    measurement_failed_rung = next(
+        (r for r in rungs if r["verdict"] == "measurement_failed"),
+        None,
+    )
 
     return {
         "load_unit": load_unit,
@@ -116,6 +131,7 @@ def _capacity(phases: list[dict[str, Any]], load_unit: str) -> dict[str, Any]:
         "safe": _rung_brief(safe_rung),
         "knee": _rung_brief(knee_rung),
         "break": _rung_brief(break_rung),
+        "measurement_failed": _rung_brief(measurement_failed_rung),
         "limiting_bottleneck": knee_rung["bottleneck"] if knee_rung else None,
     }
 
@@ -128,6 +144,7 @@ def _rung_brief(rung: dict[str, Any] | None) -> dict[str, Any] | None:
         "role": rung.get("role"),
         "verdict": rung.get("verdict"),
         "bottleneck": rung.get("bottleneck"),
+        "missing_required_metrics": rung.get("missing_required_metrics") or [],
     }
 
 
@@ -191,8 +208,24 @@ def render_markdown(session: dict[str, Any]) -> str:
             )
         )
 
+    failed_measurements = [
+        phase for phase in session["phases"]
+        if phase.get("verdict") == "measurement_failed"
+    ]
+    lines.extend(["", "## 3. 측정 실패 phase", ""])
+    if failed_measurements:
+        lines.extend(["| phase | scenario | load | 누락된 핵심 지표 |", "|---|---|---|---|"])
+        unit = session.get("load_unit", "")
+        for phase in failed_measurements:
+            missing = ", ".join(phase.get("missing_required_metrics") or []) or "-"
+            lines.append(
+                f"| {phase['role']} | {phase['scenario']} | {_fmt_load(phase.get('load'), unit)} | {missing} |"
+            )
+    else:
+        lines.append("측정 실패로 분류된 phase가 없습니다.")
+
     weight = session["baseline_weight"]
-    lines.extend(["", "## 3. Common baseline 대비 부하 무게", ""])
+    lines.extend(["", "## 4. Common baseline 대비 부하 무게", ""])
     if weight:
         lines.extend(
             [
@@ -210,7 +243,7 @@ def render_markdown(session: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 5. 기준 해석",
+            "## 6. 기준 해석",
             "",
             f"- 이 실행은 워크로드 '{session['workload']}' 부하테스트 기준에서 **{overall}** 상태입니다.",
         ]
@@ -240,6 +273,9 @@ def _capacity_headline(capacity: dict[str, Any] | None) -> str:
     safe = capacity.get("safe")
     if safe:
         return f"~{_fmt_load(safe['load'], unit)} 까지 안전"
+    failed = capacity.get("measurement_failed")
+    if failed:
+        return f"{_fmt_load(failed['load'], unit)} 단계 측정 실패"
     knee = capacity.get("knee")
     if knee:
         return f"최저 단계({_fmt_load(knee['load'], unit)})부터 이미 한계"
@@ -247,13 +283,16 @@ def _capacity_headline(capacity: dict[str, Any] | None) -> str:
 
 
 def _render_capacity(capacity: dict[str, Any] | None) -> list[str]:
-    lines = ["", "## 4. 부하 한계(용량) 판정", ""]
+    lines = ["", "## 5. 부하 한계(용량) 판정", ""]
     if not capacity or not capacity.get("rungs_evaluated"):
         lines.append("부하 ladder(stress) 단계가 없거나 평가 지표가 부족해 용량을 판정하지 못했습니다.")
         return lines
 
     unit = capacity.get("load_unit", "")
-    safe, knee, brk = capacity.get("safe"), capacity.get("knee"), capacity.get("break")
+    safe = capacity.get("safe")
+    knee = capacity.get("knee")
+    brk = capacity.get("break")
+    failed = capacity.get("measurement_failed")
     lines.extend(
         [
             "점진 부하 ladder를 단계별로 올리며 각 단계의 SLO를 평가한 결과입니다.",
@@ -263,6 +302,7 @@ def _render_capacity(capacity: dict[str, Any] | None) -> list[str]:
             f"| 안전(safe) | {_fmt_load(safe['load'], unit) if safe else '없음'} | 이 부하까지는 SLO 통과 |",
             f"| 한계 시작(knee) | {_fmt_load(knee['load'], unit) if knee else '미도달'} | 이 부하부터 기준 저하({_VERDICT_LABEL.get(knee['verdict'], '-') if knee else '-'}) |",
             f"| 기준 미통과(break) | {_fmt_load(brk['load'], unit) if brk else '미도달'} | 이 부하에서 기준 미통과 |",
+            f"| 측정 실패 | {_fmt_load(failed['load'], unit) if failed else '없음'} | 핵심 지표 누락으로 통과/실패 판단 불가 |",
             "",
             f"- 한계 병목: **{capacity.get('limiting_bottleneck') or '없음'}** "
             "(각 phase report.md 의 '권장 설정' playbook을 적용 후 동일 ladder 재실행해 knee 이동을 비교하세요).",

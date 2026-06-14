@@ -210,7 +210,12 @@ def _metric(report: Report, section: str, key: str) -> float | None:
     return float(value)
 
 
-_VERDICT_ORDER = {"unsuitable": 0, "partially_suitable": 1, "suitable": 2}
+_VERDICT_ORDER = {
+    "measurement_failed": -1,
+    "unsuitable": 0,
+    "partially_suitable": 1,
+    "suitable": 2,
+}
 
 
 def _workload_fit_change(before: Report, after: Report) -> dict[str, Any] | None:

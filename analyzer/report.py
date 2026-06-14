@@ -187,6 +187,7 @@ _VERDICT_LABEL = {
     "suitable": "기준 통과(suitable)",
     "partially_suitable": "주의(partially_suitable)",
     "unsuitable": "기준 미통과(unsuitable)",
+    "measurement_failed": "측정 실패(measurement_failed)",
 }
 
 
@@ -208,6 +209,10 @@ def _render_workload_fit(report: Report) -> list[str]:
     bottleneck = fit.get("bottleneck")
     bn_text = f" / 주요 병목: {bottleneck}" if bottleneck else ""
     lines.append(f"- 기준 판정: **{label}**{score_text}{bn_text}")
+    missing = fit.get("missing_required_metrics") or []
+    if missing:
+        lines.append(f"- 누락된 핵심 지표: `{', '.join(missing)}`")
+        lines.append("- 해석: 이 phase는 통과/실패 성능 판단이 아니라 측정 실패로 보고 재실험해야 합니다.")
     lines.append("")
 
     checks = fit.get("checks", [])

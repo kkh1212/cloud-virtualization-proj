@@ -51,9 +51,9 @@ def test_code_assistant_ramps_output_length_not_concurrency():
     phases = resolve_phases("code_assistant", "standard", CFG)
     stress = [p for p in phases if p["group"] == "stress"]
     loads = [p["load"] for p in stress]
-    assert loads == [128, 512, 1024]
+    assert loads == [256, 768, 1536]
     assert [p["env"]["LONG_OUTPUT_MAX_TOKENS"] for p in stress] == loads
-    assert {p["env"]["LONG_OUTPUT_INPUT_TOKENS"] for p in stress} == {4000}
+    assert {p["env"]["LONG_OUTPUT_INPUT_TOKENS"] for p in stress} == {1200}
     assert {p["env"]["LONG_OUTPUT_VUS"] for p in stress} == {2}
 
 
