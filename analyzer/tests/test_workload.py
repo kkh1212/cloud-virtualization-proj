@@ -84,6 +84,30 @@ def test_one_fail_is_partially_suitable_with_weighted_score():
     assert fit["bottleneck"] == "latency"
 
 
+def test_critical_threshold_makes_single_metric_unsuitable():
+    config = {
+        "profiles": {
+            "demo": {
+                "thresholds": {
+                    "p95_latency": {"max": 3.0, "critical_max": 8.0, "weight": 2},
+                    "ttft_p95": {"max": 1.0, "weight": 1},
+                }
+            }
+        }
+    }
+    fit = build_workload_fit(
+        snapshot(
+            p95_latency=ts("p95_latency", [9.0]),
+            ttft_p95=ts("ttft_p95", [0.2]),
+        ),
+        "demo",
+        config,
+    )
+    assert fit["verdict"] == "unsuitable"
+    failed = [c for c in fit["checks"] if c["met"] is False]
+    assert failed[0]["critical"] is True
+
+
 def test_all_fail_is_unsuitable_score_0():
     snap = snapshot(
         ttft_p95=ts("ttft_p95", [5.0]),

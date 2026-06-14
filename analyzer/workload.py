@@ -77,11 +77,15 @@ def build_workload_fit(
     failed = [c for c in evaluated if not c["met"]]
     skipped = len(thresholds) - len(evaluated)
 
+    critical_failed = [c for c in failed if c.get("critical")]
+
     if not evaluated:
         verdict: str | None = None
         score: float | None = None
     else:
-        if not failed:
+        if critical_failed:
+            verdict = "unsuitable"
+        elif not failed:
             verdict = "suitable"
         elif passed:
             verdict = "partially_suitable"
@@ -171,6 +175,7 @@ def _evaluate_threshold(
 
     observed = _aggregate(series, agg)
     met = observed <= target if direction == "max" else observed >= target
+    critical = _critical_breach(observed, direction, target, spec) if not met else False
     return {
         "metric": metric,
         "direction": direction,
@@ -178,6 +183,7 @@ def _evaluate_threshold(
         "observed": observed,
         "agg": agg,
         "met": met,
+        "critical": critical,
         "weight": weight,
     }
 
@@ -206,6 +212,31 @@ def _dominant_bottleneck(failed: list[dict[str, Any]]) -> str | None:
 
     worst = max(failed, key=overshoot)
     return _BOTTLENECK_BY_METRIC.get(worst["metric"], "latency")
+
+
+def _critical_breach(
+    observed: float,
+    direction: str,
+    target: float,
+    spec: dict[str, Any],
+) -> bool:
+    """Optional hard break threshold for capacity testing.
+
+    A normal max/min miss means the phase is degraded. A critical miss means the
+    workload has reached a break point even if other metrics are still healthy.
+    """
+    if direction == "max":
+        if "critical_max" in spec:
+            return observed >= _number(spec["critical_max"], "critical_max")
+        if "critical_multiplier" in spec:
+            return observed >= target * _number(spec["critical_multiplier"], "critical_multiplier")
+    else:
+        if "critical_min" in spec:
+            return observed <= _number(spec["critical_min"], "critical_min")
+        if "critical_multiplier" in spec:
+            multiplier = _number(spec["critical_multiplier"], "critical_multiplier")
+            return multiplier != 0 and observed <= target / multiplier
+    return False
 
 
 def _profile(workload_name: str, config: dict[str, Any]) -> dict[str, Any]:

@@ -19,20 +19,22 @@
 
    | 워크로드 | 실제 서비스 | 부하 ladder 축 | 지배 병목 |
    |---|---|---|---|
-   | `support_chat` | 고객지원 RAG 챗봇 | 동시성 8→16→32→64 (vus) | TTFT + queue |
-   | `doc_summary` | 문서/회의록 요약 | 입력 4k→8k→16k→32k (input_tokens) | prefill + GPU mem/KV |
-   | `code_assistant` | 코딩 보조 | 출력 128→256→512→1024 tokens | decode / TPOT / p99 |
-   | `json_extraction` | 구조화 추출/분류 (신규) | 10→25→50→100 RPS | throughput / queue |
+   | `support_chat` | 고객지원 RAG 챗봇 | 동시성 8→32→96 (vus) | TTFT + queue |
+   | `doc_summary` | 문서/회의록 요약 | 입력 4k→16k→32k (input_tokens) | prefill + GPU mem/KV |
+   | `code_assistant` | 코딩 보조 | 출력 128→512→1024 tokens | decode / TPOT / p99 |
+   | `json_extraction` | 구조화 추출/분류 (신규) | 25→100→200 RPS | throughput / queue |
 
    정의는 `analyzer/config/workload-profiles.yaml` 한 곳 (thresholds / recommendations / initial_config / test_plan).
 
-2. **부하 모델: 단일 부하 → 점진 ladder + 한계점(knee)** — 작은 부하부터 단계적으로 올려 각 단의 SLO 를 평가하고
+2. **부하 모델: 단일 부하 → 점진 ladder + 한계점(knee/break)** — 작은 부하부터 단계적으로 올려 각 단의 SLO 를 평가하고
    **safe(마지막 통과) / knee(첫 저하=partially) / break(첫 부적합=unsuitable) + 한계 병목** 을 산출.
+   - `standard` 는 빠른 capacity 검증용이라 stress ladder 만 실행한다. baseline 반복은 `quick` 또는 `full` 에서 수행한다.
+   - `critical_max` / `critical_min` 을 넘으면 일부 지표가 통과해도 `unsuitable` 로 판정하여 break 를 드러낸다.
    - 판정 로직: `analyzer/workload.py` `build_workload_fit` (단별 suitable/partial/unsuitable) → `analyzer/session.py` `_capacity` (사다리 훑어 knee).
    - 신규 시나리오 `loadtests/json_extraction.js` (constant-arrival-rate, `EXTRACT_RATE`).
 
 ### 두 파이프라인
-- **Pipeline A (진단)**: `scripts/run-workload.sh <workload> --level standard` → k6 ladder(공통 baseline + target + stress 사다리 + operational) → 각 phase analyzer → `analyzer.session` 집계 → `reports/session-<workload>-<level>-<ts>/session-report.md` 의 §4 "부하 한계(용량) 판정".
+- **Pipeline A (진단)**: `scripts/run-workload.sh <workload> --level standard` → k6 stress ladder → 각 phase analyzer → `analyzer.session` 집계 → `reports/session-<workload>-<level>-<ts>/session-report.md` 의 §4 "부하 한계(용량) 판정".
 - **Pipeline B (프로비저닝, 신규)**: `scripts/run-pipeline-b.sh <workload>` → `analyzer.provision` 이 vLLM K8s 매니페스트 생성(`k8s/generated/<workload>/{run,recommended}/` 의 00-namespace ~ 05-autoscaler) → `run` 프로필(1 replica, autoscaling off, 단일 GPU 실행용) 자동 apply → vLLM rollout 대기 → 같은 ladder 실행.
 - **세션 비교 (신규)**: `analyzer.session_compare --before <세션> --after <세션>` → safe/knee/break·verdict·phase delta 를 `session-comparison.md/json` 으로. (개선안 적용 후 knee 가 오른쪽으로 갔는지 확인)
 
@@ -42,7 +44,7 @@
 - **품질지표(JSON valid/groundedness/syntax)는 vLLM 단계로 연기**: mock 출력이 가짜라 지금은 무의미.
 
 ### 상태 / 남은 일
-- `analyzer/.venv/Scripts/pytest analyzer/tests` → **74 passed** (Windows, 2026-06-14).
+- `analyzer/.venv/Scripts/pytest analyzer/tests` → **75 passed** (Windows, 2026-06-14).
 - **남은 1순위 = GPU 서버 end-to-end 실측**: 실제 vLLM 로 ladder 를 돌려 `session-report.md` 의 safe/knee/break 가 실제로 채워지는지, Pipeline B 배포가 도는지 확인. (Windows 에선 k6/cluster 불가라 unit test 까지만 검증됨.)
 - 임계값(각 워크로드 thresholds)은 통념 기반 초기값 → GPU baseline 후 조정 가능.
 

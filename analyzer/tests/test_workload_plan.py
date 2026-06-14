@@ -21,11 +21,10 @@ def test_quick_is_baselines_only():
 def test_standard_runs_the_full_ladder():
     phases = resolve_phases("support_chat", "standard", CFG)
     groups = [p["group"] for p in phases]
-    # baselines first, then the monotonic stress ladder (>=3 rungs, no operational)
-    assert groups[:2] == ["common_baseline", "target_baseline"]
-    assert set(groups[2:]) == {"stress"}
+    # standard is the fast capacity mode: only the monotonic stress ladder.
+    assert set(groups) == {"stress"}
     stress = [p for p in phases if p["group"] == "stress"]
-    assert len(stress) >= 3
+    assert len(stress) == 3
     # the ladder load increases monotonically (support_chat ramps RAG_VUS)
     vus = [p["env"].get("RAG_VUS") for p in stress]
     assert vus == sorted(vus) and vus[-1] > vus[0]
@@ -36,7 +35,7 @@ def test_standard_runs_the_full_ladder():
 
 
 def test_baselines_have_no_load_but_ladder_does():
-    phases = resolve_phases("support_chat", "standard", CFG)
+    phases = resolve_phases("support_chat", "full", CFG)
     baselines = [p for p in phases if p["group"] != "stress"]
     assert all(p["load"] is None for p in baselines)
 
@@ -52,7 +51,7 @@ def test_code_assistant_ramps_output_length_not_concurrency():
     phases = resolve_phases("code_assistant", "standard", CFG)
     stress = [p for p in phases if p["group"] == "stress"]
     loads = [p["load"] for p in stress]
-    assert loads == [128, 256, 512, 1024]
+    assert loads == [128, 512, 1024]
     assert [p["env"]["LONG_OUTPUT_MAX_TOKENS"] for p in stress] == loads
     assert {p["env"]["LONG_OUTPUT_INPUT_TOKENS"] for p in stress} == {4000}
     assert {p["env"]["LONG_OUTPUT_VUS"] for p in stress} == {2}
@@ -62,12 +61,13 @@ def test_json_extraction_uses_conservative_rps_ladder():
     phases = resolve_phases("json_extraction", "standard", CFG)
     stress = [p for p in phases if p["group"] == "stress"]
     loads = [p["load"] for p in stress]
-    assert loads == [10, 25, 50, 100]
+    assert loads == [25, 100, 200]
     assert [p["env"]["EXTRACT_RATE"] for p in stress] == loads
 
 
 def test_full_adds_operational():
     phases = resolve_phases("support_chat", "full", CFG)
+    assert phases[0]["group"] == "common_baseline"
     assert phases[-1]["group"] == "operational"
 
 
@@ -76,7 +76,10 @@ def test_every_workload_resolves_all_levels():
         for level in ("quick", "standard", "full"):
             phases = resolve_phases(name, level, CFG)
             assert phases, f"{name}/{level} produced no phases"
-            assert phases[0]["group"] == "common_baseline"
+            if level == "standard":
+                assert phases[0]["group"] == "stress"
+            else:
+                assert phases[0]["group"] == "common_baseline"
 
 
 def test_unknown_workload_and_level_raise():

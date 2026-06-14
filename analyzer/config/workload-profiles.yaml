@@ -14,7 +14,7 @@
 #   - thresholds  : per-metric pass/fail targets -> suitable / partially / unsuitable
 #   - recommendations : bottleneck -> advisory playbook text (not computed numbers)
 #   - initial_config  : Pipeline B (analyzer/provision.py) initial K8s/LLM defaults
-#   - test_plan   : staged load LADDER (common baseline + target + monotonic stress + operational)
+#   - test_plan   : staged load LADDER (quick baselines, standard fast capacity, full operational)
 #
 # threshold schema (keys are LOGICAL metric names from analyzer/config/metrics*.yaml):
 #   <metric>: { max: X }  -> upper bound, lower is better
@@ -44,10 +44,10 @@ profiles:
     bottleneck_focus: "TTFT + queue under concurrency"
     slo_profile: strict
     thresholds:
-      ttft_p95:         { max: 1.0, agg: peak, weight: 2 }
-      p95_latency:      { max: 3.0, agg: peak, weight: 2 }
-      queue_wait_p95:   { max: 1.0, agg: peak, weight: 1 }
-      requests_waiting: { max: 10,  agg: peak, weight: 1 }
+      ttft_p95:         { max: 1.0, critical_max: 3.0, agg: peak, weight: 2 }
+      p95_latency:      { max: 3.0, critical_max: 8.0, agg: peak, weight: 2 }
+      queue_wait_p95:   { max: 1.0, critical_max: 5.0, agg: peak, weight: 1 }
+      requests_waiting: { max: 10,  critical_max: 50,  agg: peak, weight: 1 }
     recommendations:
       queue:   ["minReplicas 상향", "KEDA queue 기반 autoscaling 적용", "short/RAG 전용 pool 분리"]
       prefill: ["RAG context 길이 제한(top_k 감소)", "중복 context 제거", "prefix caching 검토"]
@@ -66,13 +66,12 @@ profiles:
       target_baseline: { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 4 } }
       stress:
         - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 8 },  load: 8,  role: conc_8 }
-        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 16 }, load: 16, role: conc_16 }
         - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 32 }, load: 32, role: conc_32 }
-        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 64 }, load: 64, role: conc_64 }
+        - { scenario: rag_like, env: { RAG_CONTEXT_TOKENS: 2000, RAG_VUS: 96 }, load: 96, role: conc_96 }
       operational: [ { scenario: burst_traffic, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
-        standard: [common_baseline, target_baseline, stress]
+        standard: [stress]
         full:     [common_baseline, target_baseline, stress, operational]
 
   doc_summary:
@@ -83,11 +82,11 @@ profiles:
     bottleneck_focus: "prefill + GPU memory / KV cache as input length grows"
     slo_profile: long_context
     thresholds:
-      ttft_p95:              { max: 3.0,   agg: peak, weight: 2 }
-      p99_latency:           { max: 15.0,  agg: peak, weight: 1 }
-      prompt_tokens_p95:     { max: 16000, agg: peak, weight: 1 }
-      gpu_memory_used_ratio: { max: 0.90,  agg: peak, weight: 2 }   # vLLM/DCGM only; skipped on mock
-      kv_cache_ratio:        { max: 0.90,  agg: peak, weight: 1 }
+      ttft_p95:              { max: 3.0,   critical_max: 8.0,   agg: peak, weight: 2 }
+      p99_latency:           { max: 15.0,  critical_max: 30.0,  agg: peak, weight: 1 }
+      prompt_tokens_p95:     { max: 16000, critical_max: 32000, agg: peak, weight: 1 }
+      gpu_memory_used_ratio: { max: 0.90,  critical_max: 0.97,  agg: peak, weight: 2 }   # vLLM/DCGM only; skipped on mock
+      kv_cache_ratio:        { max: 0.90,  critical_max: 0.98,  agg: peak, weight: 1 }
     recommendations:
       prefill:    ["문서 분할 요약(map-reduce)", "max input token 제한", "중복 context 제거"]
       gpu_memory: ["VRAM 큰 GPU 사용", "max_model_len 조정", "동시 요청 수 하향", "long_input 전용 pool 분리"]
@@ -106,13 +105,12 @@ profiles:
       target_baseline: { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000, LONG_INPUT_MAX_TOKENS: 400, LONG_INPUT_VUS: 2 } }
       stress:
         - { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000,  LONG_INPUT_VUS: 2 }, load: 4000,  role: doc_4k }
-        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 8000,  LONG_INPUT_VUS: 2 }, load: 8000,  role: doc_8k }
         - { scenario: long_input, env: { LONG_INPUT_TOKENS: 16000, LONG_INPUT_VUS: 2 }, load: 16000, role: doc_16k }
         - { scenario: long_input, env: { LONG_INPUT_TOKENS: 32000, LONG_INPUT_VUS: 2 }, load: 32000, role: doc_32k }
       operational: [ { scenario: sustained_ramp, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
-        standard: [common_baseline, target_baseline, stress]
+        standard: [stress]
         full:     [common_baseline, target_baseline, stress, operational]
 
   code_assistant:
@@ -123,11 +121,12 @@ profiles:
     bottleneck_focus: "TPOT / p99 tail latency as output code length grows"
     slo_profile: long_context
     thresholds:
-      ttft_p95:          { max: 2.0,  agg: peak, weight: 1 }
-      tpot_p95:          { max: 0.06, agg: peak, weight: 2 }
-      p99_latency:       { max: 20.0, agg: peak, weight: 2 }
-      prompt_tokens_p95: { max: 8000, agg: peak, weight: 1 }
-      output_token_rate: { min: 20,   agg: mean, weight: 1 }
+      ttft_p95:          { max: 2.0,  critical_max: 5.0,   agg: peak, weight: 1 }
+      tpot_p95:          { max: 0.06, critical_max: 0.15,  agg: peak, weight: 2 }
+      p99_latency:       { max: 20.0, critical_max: 35.0,  agg: peak, weight: 2 }
+      prompt_tokens_p95: { max: 8000, critical_max: 12000, agg: peak, weight: 1 }
+      output_token_rate: { min: 20,   critical_min: 5,     agg: mean, weight: 1 }
+      queue_wait_p95:    { max: 2.0,  critical_max: 6.0,   agg: peak, weight: 1 }
     recommendations:
       prefill: ["select only relevant code context", "limit files/snippets per request", "deduplicate repeated repo context"]
       decode:  ["cap max_tokens for interactive code generation", "enable streaming responses", "split very long code generation into smaller steps"]
@@ -146,13 +145,12 @@ profiles:
       target_baseline: { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 256, LONG_OUTPUT_VUS: 2 } }
       stress:
         - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 128,  LONG_OUTPUT_VUS: 2 }, load: 128,  role: output_128 }
-        - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 256,  LONG_OUTPUT_VUS: 2 }, load: 256,  role: output_256 }
         - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 512,  LONG_OUTPUT_VUS: 2 }, load: 512,  role: output_512 }
         - { scenario: long_output, env: { LONG_OUTPUT_INPUT_TOKENS: 4000, LONG_OUTPUT_MAX_TOKENS: 1024, LONG_OUTPUT_VUS: 2 }, load: 1024, role: output_1024 }
       operational: [ { scenario: mixed_workload, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
-        standard: [common_baseline, target_baseline, stress]
+        standard: [stress]
         full:     [common_baseline, target_baseline, stress, operational]
 
   json_extraction:
@@ -163,10 +161,10 @@ profiles:
     bottleneck_focus: "throughput / queue / scheduling, p99 stability under high RPS"
     slo_profile: default
     thresholds:
-      p99_latency:      { max: 5.0, agg: peak, weight: 2 }
-      p95_latency:      { max: 3.0, agg: peak, weight: 1 }
-      queue_wait_p95:   { max: 1.0, agg: peak, weight: 1 }
-      requests_waiting: { max: 20,  agg: peak, weight: 1 }
+      p99_latency:      { max: 5.0, critical_max: 10.0, agg: peak, weight: 2 }
+      p95_latency:      { max: 3.0, critical_max: 8.0,  agg: peak, weight: 1 }
+      queue_wait_p95:   { max: 1.0, critical_max: 5.0,  agg: peak, weight: 1 }
+      requests_waiting: { max: 20,  critical_max: 100,  agg: peak, weight: 1 }
     recommendations:
       queue:   ["replica 상향", "KEDA queue 기반 autoscaling 적용", "batch 처리/비동기 큐", "긴/짧은 요청 queue 분리"]
       latency: ["더 작은/classifier 모델 분리", "max_tokens 강하게 제한"]
@@ -183,12 +181,11 @@ profiles:
       common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
       target_baseline: { scenario: json_extraction, env: { EXTRACT_RATE: 10 } }
       stress:
-        - { scenario: json_extraction, env: { EXTRACT_RATE: 10 },  load: 10,  role: rps_10 }
         - { scenario: json_extraction, env: { EXTRACT_RATE: 25 },  load: 25,  role: rps_25 }
-        - { scenario: json_extraction, env: { EXTRACT_RATE: 50 },  load: 50,  role: rps_50 }
         - { scenario: json_extraction, env: { EXTRACT_RATE: 100 }, load: 100, role: rps_100 }
+        - { scenario: json_extraction, env: { EXTRACT_RATE: 200 }, load: 200, role: rps_200 }
       operational: [ { scenario: burst_traffic, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]
-        standard: [common_baseline, target_baseline, stress]
+        standard: [stress]
         full:     [common_baseline, target_baseline, stress, operational]

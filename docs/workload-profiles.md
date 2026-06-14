@@ -32,15 +32,21 @@ A single fixed burst only answers "did it break this once?" Real capacity planni
 needs "how many users until it breaks, and why?" So each workload's `test_plan`
 defines a **monotonic load ladder** (`stress`), sized to the workload's weight:
 
-- `support_chat` ramps concurrency (RAG_VUS 8 → 16 → 32 → 64)
-- `doc_summary` ramps input length (4k → 8k → 16k → 32k tokens)
-- `code_assistant` fixes code context/concurrency and ramps output length (128 → 256 → 512 → 1024 output tokens)
-- `json_extraction` ramps arrival rate conservatively (10 → 25 → 50 → 100 RPS)
+- `support_chat` ramps concurrency aggressively (RAG_VUS 8 → 32 → 96)
+- `doc_summary` ramps input length (4k → 16k → 32k tokens)
+- `code_assistant` fixes code context/concurrency and ramps output length (128 → 512 → 1024 output tokens)
+- `json_extraction` ramps arrival rate (25 → 100 → 200 RPS)
 
 Each rung runs as its own analyzable phase. A common LLM baseline runs first so a
 workload is never judged in isolation. `test_plan.load_unit` (`vus | input_tokens |
-output_tokens | rps`) labels the rung load. Levels: `quick` (baselines only), `standard` (full
-ladder = the capacity test), `full` (+ operational burst/ramp/mixed).
+output_tokens | rps`) labels the rung load. Levels: `quick` (baselines only),
+`standard` (fast capacity ladder only), `full` (baselines + ladder + operational
+burst/ramp/mixed). `standard` is intentionally shorter because its purpose is to
+find the knee/break quickly, not to repeat every baseline.
+
+Normal threshold misses produce `partially_suitable`. Some metrics also define a
+hard `critical_*` threshold; crossing that threshold produces `unsuitable`, which
+lets the session report mark a real `break` even when other metrics still pass.
 
 ## 3. What the report tells you — the capacity knee
 
@@ -76,7 +82,7 @@ doc_summary: 입력 16k에서 gpu_memory_used_ratio 0.9 초과 / OOM
 code_assistant: output 512~1024 tokens에서 TPOT·p99 급등
   → max_tokens 제한 / streaming / 긴 코드 생성 요청 분리 → 같은 context에서 p99·TPOT 완화 기대
 
-json_extraction: 50~100 RPS부터 p99·queue 급등
+json_extraction: 100~200 RPS부터 p99·queue 급등
   → replica 상향 / KEDA queue → 더 높은 RPS까지 p99 안정 기대
 ```
 
