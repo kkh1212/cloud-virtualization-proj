@@ -105,11 +105,11 @@ profiles:
     test_plan:
       load_unit: input_tokens
       common_baseline: { scenario: short_prompt, env: { SHORT_VUS: 4 } }
-      target_baseline: { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000, LONG_INPUT_MAX_TOKENS: 400, LONG_INPUT_VUS: 2 } }
+      target_baseline: { scenario: long_input, env: { LONG_INPUT_TOKENS: 2000, LONG_INPUT_MAX_TOKENS: 400, LONG_INPUT_VUS: 2 } }
       stress:
-        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000,  LONG_INPUT_VUS: 2 }, load: 4000,  role: doc_4k }
-        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 16000, LONG_INPUT_VUS: 2 }, load: 16000, role: doc_16k }
-        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 32000, LONG_INPUT_VUS: 2 }, load: 32000, role: doc_32k }
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 2000, LONG_INPUT_VUS: 2 }, load: 2000, role: doc_2k }
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 4000, LONG_INPUT_VUS: 2 }, load: 4000, role: doc_4k }
+        - { scenario: long_input, env: { LONG_INPUT_TOKENS: 8000, LONG_INPUT_VUS: 2 }, load: 8000, role: doc_8k }
       operational: [ { scenario: sustained_ramp, env: {} } ]
       levels:
         quick:    [common_baseline, target_baseline]

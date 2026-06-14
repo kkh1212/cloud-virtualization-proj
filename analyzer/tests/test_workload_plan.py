@@ -57,6 +57,16 @@ def test_code_assistant_ramps_output_length_not_concurrency():
     assert {p["env"]["LONG_OUTPUT_VUS"] for p in stress} == {2}
 
 
+def test_doc_summary_uses_tokenizer_safe_input_ladder():
+    phases = resolve_phases("doc_summary", "standard", CFG)
+    stress = [p for p in phases if p["group"] == "stress"]
+    loads = [p["load"] for p in stress]
+    assert loads == [2000, 4000, 8000]
+    assert [p["env"]["LONG_INPUT_TOKENS"] for p in stress] == loads
+    assert [p["role"] for p in stress] == ["doc_2k", "doc_4k", "doc_8k"]
+    assert {p["env"]["LONG_INPUT_VUS"] for p in stress} == {2}
+
+
 def test_json_extraction_uses_conservative_rps_ladder():
     phases = resolve_phases("json_extraction", "standard", CFG)
     stress = [p for p in phases if p["group"] == "stress"]

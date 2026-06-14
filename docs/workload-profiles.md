@@ -33,8 +33,8 @@ needs "how many users until it breaks, and why?" So each workload's `test_plan`
 defines a **monotonic load ladder** (`stress`), sized to the workload's weight:
 
 - `support_chat` ramps concurrency aggressively (RAG_VUS 8 → 32 → 96)
-- `doc_summary` ramps input length (4k → 16k → 32k tokens)
-- `code_assistant` fixes code context/concurrency and ramps output length (128 → 512 → 1024 output tokens)
+- `doc_summary` ramps input length (2k → 4k → 8k generator tokens; vLLM may tokenize this higher)
+- `code_assistant` fixes code context/concurrency and ramps output length (256 → 768 → 1536 output tokens)
 - `json_extraction` ramps arrival rate (25 → 100 → 200 RPS)
 
 Each rung runs as its own analyzable phase. A common LLM baseline runs first so a
@@ -76,8 +76,8 @@ Example reads:
 support_chat: queue_wait·TTFT가 동시성 40부터 급등하는데 GPU util은 낮음
   → KEDA queue autoscaling / minReplicas 상향 → 재실행 시 knee가 64+로 이동 기대
 
-doc_summary: 입력 16k에서 gpu_memory_used_ratio 0.9 초과 / OOM
-  → max_model_len 조정 또는 더 큰 VRAM / concurrency 하향 → 같은 입력서 OOM 소멸 기대
+doc_summary: 입력이 길어질수록 prompt_tokens_p95 / TTFT / GPU memory가 증가하거나 measurement_failed 발생
+  → 문서 분할 요약, max input token 제한, max_model_len 정렬 → 같은 입력에서 measurement_failed 소멸 기대
 
 code_assistant: output 512~1024 tokens에서 TPOT·p99 급등
   → max_tokens 제한 / streaming / 긴 코드 생성 요청 분리 → 같은 context에서 p99·TPOT 완화 기대
