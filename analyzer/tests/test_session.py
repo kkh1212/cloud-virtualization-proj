@@ -78,7 +78,7 @@ def test_render_markdown_has_sections(tmp_path):
     md = render_markdown(build_session(tmp_path))
     assert "# LLM 워크로드 세션 리포트" in md
     assert "## 2. Phase별 결과" in md
-    assert "기준 미통과" in md
+    assert "한계 도달" in md
 
 
 def _write_ladder_session(tmp_path):
@@ -131,7 +131,7 @@ def test_capacity_section_renders(tmp_path):
     md = render_markdown(build_session(tmp_path))
     assert "## 5. 부하 한계(용량) 판정" in md
     assert "20 vus" in md          # safe capacity shown
-    assert "## 6. 기준 해석" in md
+    assert "## 6. 결과 해석" in md
 
 
 def test_measurement_failed_is_not_safe_or_break(tmp_path):

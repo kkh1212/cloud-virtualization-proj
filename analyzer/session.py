@@ -30,9 +30,9 @@ _VERDICT_ORDER = {
 }
 _VERDICT_LABEL = {
     "measurement_failed": "측정 실패(measurement_failed)",
-    "unsuitable": "기준 미통과(unsuitable)",
+    "unsuitable": "한계 도달(unsuitable)",
     "partially_suitable": "주의(partially_suitable)",
-    "suitable": "기준 통과(suitable)",
+    "suitable": "통과(suitable)",
 }
 
 
@@ -183,14 +183,14 @@ def render_markdown(session: dict[str, Any]) -> str:
         f"| workload | {session['workload']} |",
         f"| level | {session['level']} |",
         f"| 생성 | {session['created_iso']} |",
-        f"| 기준 판정 | **{overall}** |",
-        f"| 기준 score(최저) | {('%.1f' % score) if score is not None else '평가 불가'} |",
+        f"| 부하 기준 결과 | **{overall}** |",
+        f"| 부하 score(최저) | {('%.1f' % score) if score is not None else '평가 불가'} |",
         f"| 관측 병목 | {', '.join(session['bottlenecks']) or '없음'} |",
         f"| 안전 용량(safe capacity) | {_capacity_headline(session.get('capacity'))} |",
         "",
         "## 2. Phase별 결과",
         "",
-        "| # | group | role | scenario | 기준 판정 | score | bottleneck | p95(s) | TTFT(s) |",
+        "| # | group | role | scenario | 단계 상태 | score | bottleneck | p95(s) | TTFT(s) |",
         "|---|---|---|---|---|---:|---|---:|---:|",
     ]
     for index, phase in enumerate(session["phases"], start=1):
@@ -243,18 +243,17 @@ def render_markdown(session: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 6. 기준 해석",
+            "## 6. 결과 해석",
             "",
-            f"- 이 실행은 워크로드 '{session['workload']}' 부하테스트 기준에서 **{overall}** 상태입니다.",
+            f"- 이 실행은 워크로드 '{session['workload']}' 부하 ladder에서 **{overall}** 상태를 관측했습니다.",
         ]
     )
     if session["bottlenecks"]:
         lines.append(
-            f"- 주요 병목: {', '.join(session['bottlenecks'])}. "
-            "4종 워크로드 확인 후 설정을 조정하고 동일 ladder로 재실행해 개선 여부를 비교하세요."
+            f"- 관측 병목: {', '.join(session['bottlenecks'])}."
         )
     else:
-        lines.append("- 임계값을 넘긴 phase 가 없습니다(또는 평가 지표 미수집).")
+        lines.append("- 임계값을 넘긴 phase가 없습니다.")
     lines.append("")
     return "\n".join(lines)
 
@@ -278,7 +277,7 @@ def _capacity_headline(capacity: dict[str, Any] | None) -> str:
         return f"{_fmt_load(failed['load'], unit)} 단계 측정 실패"
     knee = capacity.get("knee")
     if knee:
-        return f"최저 단계({_fmt_load(knee['load'], unit)})부터 이미 한계"
+        return f"최저 단계({_fmt_load(knee['load'], unit)})부터 주의/한계 관측"
     return "판정 불가"
 
 
@@ -299,9 +298,9 @@ def _render_capacity(capacity: dict[str, Any] | None) -> list[str]:
             "",
             "| 구간 | 부하 | 의미 |",
             "|---|---|---|",
-            f"| 안전(safe) | {_fmt_load(safe['load'], unit) if safe else '없음'} | 이 부하까지는 SLO 통과 |",
-            f"| 한계 시작(knee) | {_fmt_load(knee['load'], unit) if knee else '미도달'} | 이 부하부터 기준 저하({_VERDICT_LABEL.get(knee['verdict'], '-') if knee else '-'}) |",
-            f"| 기준 미통과(break) | {_fmt_load(brk['load'], unit) if brk else '미도달'} | 이 부하에서 기준 미통과 |",
+            f"| 안전(safe) | {_fmt_load(safe['load'], unit) if safe else '없음'} | 이 부하까지는 기준 통과 |",
+            f"| 한계 시작(knee) | {_fmt_load(knee['load'], unit) if knee else '미도달'} | 이 부하부터 주의/한계 상태 관측({_VERDICT_LABEL.get(knee['verdict'], '-') if knee else '-'}) |",
+            f"| 한계 도달(break) | {_fmt_load(brk['load'], unit) if brk else '미도달'} | 이 부하에서 한계 상태 관측 |",
             f"| 측정 실패 | {_fmt_load(failed['load'], unit) if failed else '없음'} | 핵심 지표 누락으로 통과/실패 판단 불가 |",
             "",
             f"- 한계 병목: **{capacity.get('limiting_bottleneck') or '없음'}** "

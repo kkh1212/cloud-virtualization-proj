@@ -220,5 +220,5 @@ def test_report_renders_workload_section_and_json():
     md = render_markdown(report)
     js = render_json(report)
     assert "## 11. 워크로드 부하 기준 판정" in md
-    assert "기준 미통과" in md
+    assert "한계 도달" in md
     assert '"workload_fit"' in js
