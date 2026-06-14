@@ -184,9 +184,9 @@ def render_markdown(report: Report) -> str:
 
 
 _VERDICT_LABEL = {
-    "suitable": "통과(suitable)",
+    "suitable": "기준 통과(suitable)",
     "partially_suitable": "주의(partially_suitable)",
-    "unsuitable": "한계 도달(unsuitable)",
+    "unsuitable": "기준 미통과(unsuitable)",
     "measurement_failed": "측정 실패(measurement_failed)",
 }
 
@@ -208,7 +208,7 @@ def _render_workload_fit(report: Report) -> list[str]:
     score_text = f" / score: {_fmt(score)} / 100" if score is not None else ""
     bottleneck = fit.get("bottleneck")
     bn_text = f" / 주요 병목: {bottleneck}" if bottleneck else ""
-    lines.append(f"- 부하 기준 결과: **{label}**{score_text}{bn_text}")
+    lines.append(f"- 기준 판정: **{label}**{score_text}{bn_text}")
     missing = fit.get("missing_required_metrics") or []
     if missing:
         lines.append(f"- 누락된 핵심 지표: `{', '.join(missing)}`")

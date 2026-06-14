@@ -147,7 +147,7 @@ def workload_fit_result(workload_fit: dict[str, Any]) -> RuleResult | None:
     verdict_label = {
         "measurement_failed": "측정 실패",
         "partially_suitable": "주의",
-        "unsuitable": "한계 도달",
+        "unsuitable": "기준 미통과",
     }.get(verdict, verdict)
     if verdict == "measurement_failed":
         suggestion = (
@@ -159,7 +159,7 @@ def workload_fit_result(workload_fit: dict[str, Any]) -> RuleResult | None:
         suggestion = (
             f"워크로드 '{workload}' 부하 기준 {verdict_label}"
             + (f" (주요 병목: {bottleneck})." if bottleneck else ".")
-            + " 권장(playbook)을 참고해 동일 ladder 재실행으로 변화를 확인하세요."
+            + " 4종 부하테스트 확인 후 권장(playbook)을 참고해 설정을 조정하세요."
         )
     return RuleResult(
         rule_id="workload_fit",
