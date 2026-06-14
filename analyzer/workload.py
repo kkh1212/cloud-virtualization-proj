@@ -127,10 +127,14 @@ def workload_fit_result(workload_fit: dict[str, Any]) -> RuleResult | None:
     severity = "critical" if verdict == "unsuitable" else "warning"
     workload = workload_fit.get("workload")
     bottleneck = workload_fit.get("bottleneck")
+    verdict_label = {
+        "partially_suitable": "주의",
+        "unsuitable": "기준 미통과",
+    }.get(verdict, verdict)
     suggestion = (
-        f"워크로드 '{workload}' 기준 {verdict}"
+        f"워크로드 '{workload}' 부하 기준 {verdict_label}"
         + (f" (주요 병목: {bottleneck})." if bottleneck else ".")
-        + " 워크로드별 권장(playbook)을 참고해 설정을 조정하세요."
+        + " 4종 부하테스트 확인 후 권장(playbook)을 참고해 설정을 조정하세요."
     )
     return RuleResult(
         rule_id="workload_fit",

@@ -55,7 +55,7 @@ lets the session report mark a real `break` even when other metrics still pass.
 ```text
 안전 용량(safe)   : 마지막으로 SLO를 통과한 부하
 한계 시작(knee)   : 처음으로 SLO가 저하된 부하 (partially_suitable)
-붕괴(break)       : 부적합(unsuitable)이 된 부하
+기준 미통과(break): 기준 미통과(unsuitable)가 된 부하
 한계 병목          : knee에서 지배적인 병목 카테고리 (queue / prefill / decode / gpu_memory ...)
 ```
 

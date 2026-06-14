@@ -172,6 +172,6 @@ def test_report_renders_workload_section_and_json():
     report = _build_report("short_prompt", snapshot(), [], workload_fit=fit)
     md = render_markdown(report)
     js = render_json(report)
-    assert "## 11. 워크로드 적합성 판정" in md
-    assert "부적합" in md
+    assert "## 11. 워크로드 부하 기준 판정" in md
+    assert "기준 미통과" in md
     assert '"workload_fit"' in js

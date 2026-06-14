@@ -115,5 +115,5 @@ def test_compare_includes_llm_metrics_and_verdict_change(tmp_path):
 
     assert comp["workload_fit"]["improved"] is True
     md = render_markdown(comp)
-    assert "워크로드 적합성 변화" in md
-    assert any("워크로드 적합성" in line for line in comp["summary"])
+    assert "워크로드 부하 기준 판정 변화" in md
+    assert any("워크로드 부하 기준 판정" in line for line in comp["summary"])

@@ -106,7 +106,7 @@ def build_comparison(before_dir: Path, after_dir: Path) -> dict[str, Any]:
         arrow = "개선" if workload_fit["improved"] else "악화/유지"
         summary.insert(
             0,
-            f"워크로드 적합성: {workload_fit['before_verdict']} → "
+            f"워크로드 부하 기준 판정: {workload_fit['before_verdict']} → "
             f"{workload_fit['after_verdict']} ({arrow})",
         )
     return {
@@ -175,7 +175,7 @@ def render_markdown(comparison: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                "## 4. 워크로드 적합성 변화",
+                "## 4. 워크로드 부하 기준 판정 변화",
                 "",
                 "| 항목 | Before | After |",
                 "|---|---|---|",

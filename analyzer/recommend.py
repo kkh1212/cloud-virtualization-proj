@@ -102,7 +102,7 @@ def _apply_workload_awareness(
                 "target": f"[{bottleneck}] 워크로드 권장",
                 "current": "-",
                 "recommended": text,
-                "rationale": f"워크로드 '{workload}' 적합성 기반 advisory (계산값 아님).",
+                "rationale": f"워크로드 '{workload}' 부하 기준 advisory (계산값 아님).",
                 "priority": "high",
                 "advisory": True,
             }

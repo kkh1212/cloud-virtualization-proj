@@ -175,7 +175,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workload",
         help=(
-            "Name under analyzer/config/workload-profiles.yaml. 워크로드 적합성 판정 + "
+            "Name under analyzer/config/workload-profiles.yaml. 워크로드 부하 기준 판정 + "
             "SLO 자동선택 + 워크로드 인식 추천을 활성화."
         ),
     )

@@ -184,14 +184,14 @@ def render_markdown(report: Report) -> str:
 
 
 _VERDICT_LABEL = {
-    "suitable": "적합(suitable)",
-    "partially_suitable": "부분 적합(partially_suitable)",
-    "unsuitable": "부적합(unsuitable)",
+    "suitable": "기준 통과(suitable)",
+    "partially_suitable": "주의(partially_suitable)",
+    "unsuitable": "기준 미통과(unsuitable)",
 }
 
 
 def _render_workload_fit(report: Report) -> list[str]:
-    lines = ["", "## 11. 워크로드 적합성 판정", ""]
+    lines = ["", "## 11. 워크로드 부하 기준 판정", ""]
     fit = report.workload_fit
     if not fit:
         lines.append(
@@ -207,7 +207,7 @@ def _render_workload_fit(report: Report) -> list[str]:
     score_text = f" / score: {_fmt(score)} / 100" if score is not None else ""
     bottleneck = fit.get("bottleneck")
     bn_text = f" / 주요 병목: {bottleneck}" if bottleneck else ""
-    lines.append(f"- 종합 판정: **{label}**{score_text}{bn_text}")
+    lines.append(f"- 기준 판정: **{label}**{score_text}{bn_text}")
     lines.append("")
 
     checks = fit.get("checks", [])

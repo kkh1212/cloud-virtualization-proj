@@ -24,9 +24,9 @@ from analyzer.schemas import Report
 
 _VERDICT_ORDER = {"unsuitable": 0, "partially_suitable": 1, "suitable": 2}
 _VERDICT_LABEL = {
-    "unsuitable": "부적합(unsuitable)",
-    "partially_suitable": "부분 적합(partially_suitable)",
-    "suitable": "적합(suitable)",
+    "unsuitable": "기준 미통과(unsuitable)",
+    "partially_suitable": "주의(partially_suitable)",
+    "suitable": "기준 통과(suitable)",
 }
 
 
@@ -166,14 +166,14 @@ def render_markdown(session: dict[str, Any]) -> str:
         f"| workload | {session['workload']} |",
         f"| level | {session['level']} |",
         f"| 생성 | {session['created_iso']} |",
-        f"| 종합 판정 | **{overall}** |",
-        f"| 종합 score(최저) | {('%.1f' % score) if score is not None else '평가 불가'} |",
+        f"| 기준 판정 | **{overall}** |",
+        f"| 기준 score(최저) | {('%.1f' % score) if score is not None else '평가 불가'} |",
         f"| 관측 병목 | {', '.join(session['bottlenecks']) or '없음'} |",
         f"| 안전 용량(safe capacity) | {_capacity_headline(session.get('capacity'))} |",
         "",
         "## 2. Phase별 결과",
         "",
-        "| # | group | role | scenario | verdict | score | bottleneck | p95(s) | TTFT(s) |",
+        "| # | group | role | scenario | 기준 판정 | score | bottleneck | p95(s) | TTFT(s) |",
         "|---|---|---|---|---|---:|---|---:|---:|",
     ]
     for index, phase in enumerate(session["phases"], start=1):
@@ -183,7 +183,7 @@ def render_markdown(session: dict[str, Any]) -> str:
                 group=phase["group"],
                 role=phase["role"],
                 scenario=phase["scenario"],
-                verdict=phase["verdict"] if phase["verdict"] is not None else "평가없음",
+                verdict=_VERDICT_LABEL.get(phase["verdict"], "평가없음"),
                 score=("%.1f" % phase["score"]) if phase["score"] is not None else "-",
                 bn=phase["bottleneck"] or "-",
                 p95=_fmt(phase["p95_latency_peak_seconds"]),
@@ -210,15 +210,15 @@ def render_markdown(session: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 5. 종합 판단",
+            "## 5. 기준 해석",
             "",
-            f"- 이 설정은 워크로드 '{session['workload']}' 기준 **{overall}** 입니다.",
+            f"- 이 실행은 워크로드 '{session['workload']}' 부하테스트 기준에서 **{overall}** 상태입니다.",
         ]
     )
     if session["bottlenecks"]:
         lines.append(
             f"- 주요 병목: {', '.join(session['bottlenecks'])}. "
-            "각 phase report.md 의 '권장 설정'(workload playbook 포함)을 적용 후 동일 level 로 재실행해 비교하세요."
+            "4종 워크로드 확인 후 설정을 조정하고 동일 ladder로 재실행해 개선 여부를 비교하세요."
         )
     else:
         lines.append("- 임계값을 넘긴 phase 가 없습니다(또는 평가 지표 미수집).")
@@ -261,8 +261,8 @@ def _render_capacity(capacity: dict[str, Any] | None) -> list[str]:
             "| 구간 | 부하 | 의미 |",
             "|---|---|---|",
             f"| 안전(safe) | {_fmt_load(safe['load'], unit) if safe else '없음'} | 이 부하까지는 SLO 통과 |",
-            f"| 한계 시작(knee) | {_fmt_load(knee['load'], unit) if knee else '미도달'} | 이 부하부터 SLO 저하({knee['verdict'] if knee else '-'}) |",
-            f"| 붕괴(break) | {_fmt_load(brk['load'], unit) if brk else '미도달'} | 이 부하에서 부적합 |",
+            f"| 한계 시작(knee) | {_fmt_load(knee['load'], unit) if knee else '미도달'} | 이 부하부터 기준 저하({_VERDICT_LABEL.get(knee['verdict'], '-') if knee else '-'}) |",
+            f"| 기준 미통과(break) | {_fmt_load(brk['load'], unit) if brk else '미도달'} | 이 부하에서 기준 미통과 |",
             "",
             f"- 한계 병목: **{capacity.get('limiting_bottleneck') or '없음'}** "
             "(각 phase report.md 의 '권장 설정' playbook을 적용 후 동일 ladder 재실행해 knee 이동을 비교하세요).",
