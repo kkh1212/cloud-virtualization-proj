@@ -31,6 +31,9 @@ Options:
   --model NAME                  OpenAI model name sent by k6. Default: mock.
   --prometheus-url URL          Prometheus URL. Default: http://localhost:9090.
   --skip-health                 Skip per-phase HTTP health check.
+  --env KEY=VALUE               Override or add a k6 scenario environment variable.
+                                Can be repeated; useful for demo retests such as
+                                --env RAG_CONTEXT_TOKENS=1000 --env RAG_MAX_TOKENS=128.
 EOF
 }
 
@@ -39,6 +42,7 @@ LEVEL="standard"
 PASSTHROUGH=()
 PROM_URL="http://localhost:9090"
 TARGET="mock"
+ENV_OVERRIDES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +53,15 @@ while [[ $# -gt 0 ]]; do
     --model) PASSTHROUGH+=(--model "$2"); shift 2 ;;
     --prometheus-url) PROM_URL="$2"; PASSTHROUGH+=(--prometheus-url "$2"); shift 2 ;;
     --skip-health) PASSTHROUGH+=(--skip-health); shift ;;
+    --env)
+      if [[ $# -lt 2 || "$2" != *=* ]]; then
+        warn "--env requires KEY=VALUE"
+        usage
+        exit 1
+      fi
+      ENV_OVERRIDES+=("$2")
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     --*) warn "Unknown option: $1"; usage; exit 1 ;;
     *)
@@ -69,6 +82,38 @@ PLAN="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level 
   exit 2
 }
 LOAD_UNIT="$("$ANALYZER_PY" -m analyzer.workload_plan --workload "$WORKLOAD" --level "$LEVEL" --load-unit 2>/dev/null || true)"
+
+effective_env_csv() {
+  local envcsv="$1"
+  local -a entries=()
+  local kv key
+
+  if [[ "$envcsv" != "-" && -n "$envcsv" ]]; then
+    IFS=',' read -ra entries <<< "$envcsv"
+  fi
+
+  for override in "${ENV_OVERRIDES[@]}"; do
+    key="${override%%=*}"
+    local replaced=0
+    for idx in "${!entries[@]}"; do
+      kv="${entries[$idx]}"
+      if [[ "${kv%%=*}" == "$key" ]]; then
+        entries[$idx]="$override"
+        replaced=1
+      fi
+    done
+    if [[ "$replaced" -eq 0 ]]; then
+      entries+=("$override")
+    fi
+  done
+
+  if [[ "${#entries[@]}" -eq 0 ]]; then
+    printf '-'
+  else
+    local IFS=,
+    printf '%s' "${entries[*]}"
+  fi
+}
 
 preflight_vllm_shape() {
   [[ "$TARGET" == "vllm" ]] || return 0
@@ -145,11 +190,12 @@ while IFS=$'\t' read -r group role scenario envcsv load; do
   safe_role="$(printf '%s' "$role" | tr -c 'A-Za-z0-9_' '-')"
   phase_dirname="${nn}-${group}-${safe_role}"
   phase_dir="${SESSION}/${phase_dirname}"
+  effective_envcsv="$(effective_env_csv "$envcsv")"
 
-  info "Phase ${nn}: group=${group} role=${role} scenario=${scenario} env=${envcsv}"
+  info "Phase ${nn}: group=${group} role=${role} scenario=${scenario} env=${effective_envcsv}"
   (
-    if [[ "$envcsv" != "-" ]]; then
-      IFS=',' read -ra kvs <<< "$envcsv"
+    if [[ "$effective_envcsv" != "-" ]]; then
+      IFS=',' read -ra kvs <<< "$effective_envcsv"
       for kv in "${kvs[@]}"; do export "${kv?}"; done
     fi
     if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
@@ -166,7 +212,7 @@ while IFS=$'\t' read -r group role scenario envcsv load; do
   fi
 
   if [[ -z "${load:-}" || "$load" == "-" ]]; then load_json="null"; else load_json="$load"; fi
-  phase_entries+=("    {\"group\": \"${group}\", \"role\": \"${role}\", \"scenario\": \"${scenario}\", \"dir\": \"${phase_dirname}\", \"env\": \"${envcsv}\", \"load\": ${load_json}}")
+  phase_entries+=("    {\"group\": \"${group}\", \"role\": \"${role}\", \"scenario\": \"${scenario}\", \"dir\": \"${phase_dirname}\", \"env\": \"${effective_envcsv}\", \"load\": ${load_json}}")
 done <<< "$PLAN"
 
 # session.json manifest
